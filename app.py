@@ -29,6 +29,13 @@ if start_date > end_date:
 
 fetch_button = st.button("Fetch Orders")
 
+# ------------------------
+# PDF font path
+FONT_PATH = "DejaVuSans.ttf"
+if not os.path.exists(FONT_PATH):
+    st.error("Font DejaVuSans.ttf not found in repo! PDF generation will fail.")
+
+# ------------------------
 if fetch_button:
     st.info("Fetching completed orders from WooCommerce...")
 
@@ -139,40 +146,35 @@ if fetch_button:
             st.write(f"**Invoice Numbers:** {first_invoice_number} → {last_invoice_number}")
 
         # ------------------------
-        # Generate Summary PDF using fpdf2 with UTF-8 font
+        # Generate Summary PDF
         pdf = FPDF()
         pdf.add_page()
-        # Make sure DejaVuSans.ttf is in your app folder
-        font_path = "DejaVuSans.ttf"
-        if not os.path.exists(font_path):
-            st.error("Font DejaVuSans.ttf not found in app folder!")
-        else:
-            pdf.add_font("DejaVu", "", font_path, uni=True)
-            pdf.set_font("DejaVu", "B", 14)
-            pdf.cell(0, 10, "WooCommerce Orders Summary", ln=True, align="C")
-            pdf.ln(10)
-            pdf.set_font("DejaVu", "", 12)
-            pdf.multi_cell(0, 8, f"Date Range: {start_date} → {end_date}")
-            pdf.multi_cell(0, 8, f"Total Orders Processed: {len(all_orders)}")
-            pdf.multi_cell(0, 8, f"Order IDs: {first_order_id} → {last_order_id}")
-            pdf.multi_cell(0, 8, f"Invoice Numbers: {first_invoice_number} → {last_invoice_number}")
+        pdf.add_font("DejaVu", "", FONT_PATH, uni=True)
+        pdf.set_font("DejaVu", "B", 14)
+        pdf.cell(0, 10, "WooCommerce Orders Summary", ln=True, align="C")
+        pdf.ln(10)
+        pdf.set_font("DejaVu", "", 12)
+        pdf.multi_cell(0, 8, f"Date Range: {start_date} → {end_date}")
+        pdf.multi_cell(0, 8, f"Total Orders Processed: {len(all_orders)}")
+        pdf.multi_cell(0, 8, f"Order IDs: {first_order_id} → {last_order_id}")
+        pdf.multi_cell(0, 8, f"Invoice Numbers: {first_invoice_number} → {last_invoice_number}")
 
-            pdf_buffer = io.BytesIO()
-            pdf.output(pdf_buffer)
-            pdf_bytes = pdf_buffer.getvalue()
+        pdf_buffer = io.BytesIO()
+        pdf.output(pdf_buffer)
+        pdf_bytes = pdf_buffer.getvalue()
 
-            # ------------------------
-            # Download buttons
-            st.download_button(
-                label="Download CSV",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name=f"orders_{start_date}_{end_date}.csv",
-                mime="text/csv"
-            )
+        # ------------------------
+        # Download buttons
+        st.download_button(
+            label="Download CSV",
+            data=df.to_csv(index=False).encode("utf-8"),
+            file_name=f"orders_{start_date}_{end_date}.csv",
+            mime="text/csv"
+        )
 
-            st.download_button(
-                label="Download Summary PDF",
-                data=pdf_bytes,
-                file_name=f"summary_{start_date}_{end_date}.pdf",
-                mime="application/pdf"
-            )
+        st.download_button(
+            label="Download Summary PDF",
+            data=pdf_bytes,
+            file_name=f"summary_{start_date}_{end_date}.pdf",
+            mime="application/pdf"
+        )

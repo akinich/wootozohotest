@@ -5,6 +5,7 @@ import requests
 from datetime import datetime
 from fpdf import FPDF
 import io
+import os
 
 # ------------------------
 # WooCommerce API settings (use Streamlit secrets for production)
@@ -138,34 +139,40 @@ if fetch_button:
             st.write(f"**Invoice Numbers:** {first_invoice_number} → {last_invoice_number}")
 
         # ------------------------
-        # Generate Summary PDF
+        # Generate Summary PDF using fpdf2 with UTF-8 font
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", "B", 14)
-        pdf.cell(0, 10, "WooCommerce Orders Summary", ln=True, align="C")
-        pdf.ln(10)
-        pdf.set_font("Arial", "", 12)
-        pdf.cell(0, 8, f"Date Range: {start_date} → {end_date}", ln=True)
-        pdf.cell(0, 8, f"Total Orders Processed: {len(all_orders)}", ln=True)
-        pdf.cell(0, 8, f"Order IDs: {first_order_id} → {last_order_id}", ln=True)
-        pdf.cell(0, 8, f"Invoice Numbers: {first_invoice_number} → {last_invoice_number}", ln=True)
+        # Make sure DejaVuSans.ttf is in your app folder
+        font_path = "DejaVuSans.ttf"
+        if not os.path.exists(font_path):
+            st.error("Font DejaVuSans.ttf not found in app folder!")
+        else:
+            pdf.add_font("DejaVu", "", font_path, uni=True)
+            pdf.set_font("DejaVu", "B", 14)
+            pdf.cell(0, 10, "WooCommerce Orders Summary", ln=True, align="C")
+            pdf.ln(10)
+            pdf.set_font("DejaVu", "", 12)
+            pdf.multi_cell(0, 8, f"Date Range: {start_date} → {end_date}")
+            pdf.multi_cell(0, 8, f"Total Orders Processed: {len(all_orders)}")
+            pdf.multi_cell(0, 8, f"Order IDs: {first_order_id} → {last_order_id}")
+            pdf.multi_cell(0, 8, f"Invoice Numbers: {first_invoice_number} → {last_invoice_number}")
 
-        pdf_buffer = io.BytesIO()
-        pdf.output(pdf_buffer)
-        pdf_bytes = pdf_buffer.getvalue()
+            pdf_buffer = io.BytesIO()
+            pdf.output(pdf_buffer)
+            pdf_bytes = pdf_buffer.getvalue()
 
-        # ------------------------
-        # Download buttons
-        st.download_button(
-            label="Download CSV",
-            data=df.to_csv(index=False).encode("utf-8"),
-            file_name=f"orders_{start_date}_{end_date}.csv",
-            mime="text/csv"
-        )
+            # ------------------------
+            # Download buttons
+            st.download_button(
+                label="Download CSV",
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name=f"orders_{start_date}_{end_date}.csv",
+                mime="text/csv"
+            )
 
-        st.download_button(
-            label="Download Summary PDF",
-            data=pdf_bytes,
-            file_name=f"summary_{start_date}_{end_date}.pdf",
-            mime="application/pdf"
-        )
+            st.download_button(
+                label="Download Summary PDF",
+                data=pdf_bytes,
+                file_name=f"summary_{start_date}_{end_date}.pdf",
+                mime="application/pdf"
+            )

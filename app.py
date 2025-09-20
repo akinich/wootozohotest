@@ -1,65 +1,70 @@
+import streamlit as st
 from fpdf import FPDF
 import os
-import io
-from datetime import datetime
-import streamlit as st
 
-st.write("DEBUG SECRETS:", st.secrets)
-# ---- Streamlit App ----
-st.title("WooCommerce to Zoho CSV Exporter")
+# ==============================
+# DEBUG - Check secrets
+# ==============================
+st.write("DEBUG SECRETS:", dict(st.secrets))
 
-# WooCommerce API Settings
-st.write("DEBUG BEFORE ERROR:", st.secrets.get("woocommerce", "woocommerce missing"))
+# ==============================
+# Load WooCommerce API Keys
+# ==============================
+try:
+    WC_CONSUMER_KEY = st.secrets["woocommerce"]["consumer_key"]
+    WC_CONSUMER_SECRET = st.secrets["woocommerce"]["consumer_secret"]
+    WC_STORE_URL = st.secrets["woocommerce"]["store_url"]
+except KeyError as e:
+    st.error(f"Missing WooCommerce secret key: {e}")
+    st.stop()
 
-WC_API_URL = "https://sustenance.co.in/wp-json/wc/v3"
-WC_CONSUMER_KEY = st.secrets["woocommerce"]["consumer_key"]
-WC_CONSUMER_SECRET = st.secrets["woocommerce"]["consumer_secret"]
-
-# --- PDF Summary Function ---
+# ==============================
+# Custom PDF Class
+# ==============================
 class PDF(FPDF):
     def header(self):
-        self.set_font("RobotoBlack", size=14)
-        self.cell(0, 10, "WooCommerce Orders Summary", ln=True, align="C")
-        self.ln(10)
+        self.set_font("Roboto", "B", 16)
+        self.cell(0, 10, "Generated Labels", 0, 1, "C")
 
-def generate_summary_pdf(summary_data):
-    pdf = PDF()
-    pdf.add_page()
+    def footer(self):
+        self.set_y(-15)
+        self.set_font("Roboto", "I", 8)
+        self.cell(0, 10, f"Page {self.page_no()}", 0, 0, "C")
 
-    # Add Roboto Black font
-    pdf.add_font("RobotoBlack", "", "Roboto-Black.ttf", uni=True)
-    pdf.set_font("RobotoBlack", size=12)
+# ==============================
+# Load Roboto Font
+# ==============================
+font_path = os.path.join(os.path.dirname(__file__), "Roboto-Black.ttf")
+if not os.path.exists(font_path):
+    st.error(f"Font file not found: {font_path}")
+    st.stop()
 
-    # Add summary text
-    pdf.cell(0, 10, f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
-    pdf.ln(5)
-    pdf.cell(0, 10, f"Number of Orders Downloaded: {summary_data['num_orders']}", ln=True)
-    pdf.cell(0, 10, f"Order ID Range: {summary_data['start_order_id']} - {summary_data['end_order_id']}", ln=True)
-    pdf.cell(0, 10, f"Invoice Number Range: {summary_data['start_invoice']} - {summary_data['end_invoice']}", ln=True)
+pdf = PDF()
+pdf.add_font("Roboto", "", font_path, uni=True)
+pdf.add_font("Roboto", "B", font_path, uni=True)
+pdf.set_auto_page_break(auto=True, margin=15)
+pdf.add_page()
+pdf.set_font("Roboto", "B", 14)
 
-    # Output PDF as bytes
-    pdf_buffer = io.BytesIO()
-    pdf.output(pdf_buffer)
-    pdf_buffer.seek(0)
-    return pdf_buffer
+# ==============================
+# Example Content
+# ==============================
+pdf.cell(0, 10, "Hello, this is a test PDF using Roboto font!", ln=True)
+pdf.ln(10)
+pdf.set_font("Roboto", "", 12)
+pdf.multi_cell(0, 10, "This PDF uses Roboto-Black.ttf instead of DejaVuSans.ttf.\n\nNo autodownload logic is required now.")
 
-# --- Main Logic ---
-if st.button("Generate CSV and Summary PDF"):
-    # Example dummy summary data for now
-    summary_data = {
-        "num_orders": 15,
-        "start_order_id": 101,
-        "end_order_id": 115,
-        "start_invoice": "INV-001",
-        "end_invoice": "INV-015"
-    }
+# ==============================
+# Streamlit UI
+# ==============================
+st.title("PDF Generator")
 
-    pdf_file = generate_summary_pdf(summary_data)
+# Generate PDF Button
+if st.button("Generate PDF"):
+    output_path = os.path.join(os.getcwd(), "labels.pdf")
+    pdf.output(output_path)
+    st.success(f"PDF generated: {output_path}")
 
-    # Allow PDF download
-    st.download_button(
-        label="Download Summary PDF",
-        data=pdf_file,
-        file_name=f"order_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-        mime="application/pdf"
-    )
+    # Provide download link
+    with open(output_path, "rb") as f:
+        st.download_button("Download PDF", f, file_name="labels.pdf", mime="application/pdf")

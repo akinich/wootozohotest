@@ -4,6 +4,7 @@ import io
 from datetime import datetime
 import streamlit as st
 
+st.write("DEBUG SECRETS:", st.secrets)
 # ---- Streamlit App ----
 st.title("WooCommerce to Zoho CSV Exporter")
 

@@ -55,75 +55,91 @@ if fetch_button:
         all_orders.extend(orders)
         page += 1
 
-    st.success(f"Fetched {len(all_orders)} completed orders.")
+    if not all_orders:
+        st.warning("No completed orders found in this date range.")
+    else:
+        st.success(f"Fetched {len(all_orders)} completed orders.")
 
-    # --- Fix: sort ascending by order ID so invoice numbers match order flow ---
-    all_orders.sort(key=lambda x: x["id"])
+        # --- Sort ascending by order ID so invoice numbers match order flow ---
+        all_orders.sort(key=lambda x: x["id"])
 
-    # ------------------------
-    # Transform orders into CSV rows
-    csv_rows = []
-    sequence_number = start_sequence
+        # ------------------------
+        # Transform orders into CSV rows
+        csv_rows = []
+        sequence_number = start_sequence
 
-    for order in all_orders:
-        order_id = order["id"]
-        invoice_number = f"{invoice_prefix}{sequence_number:05d}"
-        sequence_number += 1
+        for order in all_orders:
+            order_id = order["id"]
+            invoice_number = f"{invoice_prefix}{sequence_number:05d}"
+            sequence_number += 1
 
-        invoice_date = datetime.strptime(order["date_created"], "%Y-%m-%dT%H:%M:%S").strftime("%Y-%m-%d %H:%M:%S")
-        customer_name = f"{order['billing']['first_name']} {order['billing']['last_name']}"
-        place_of_supply = order['billing']['state']
-        currency = order['currency']
-        shipping_charge = float(order['shipping_total']) if order['shipping_total'] else 0
-        entity_discount = float(order['discount_total']) if order['discount_total'] else 0
+            invoice_date = datetime.strptime(order["date_created"], "%Y-%m-%dT%H:%M:%S").strftime("%Y-%m-%d %H:%M:%S")
+            customer_name = f"{order['billing']['first_name']} {order['billing']['last_name']}"
+            place_of_supply = order['billing']['state']
+            currency = order['currency']
+            shipping_charge = float(order['shipping_total']) if order['shipping_total'] else 0
+            entity_discount = float(order['discount_total']) if order['discount_total'] else 0
 
-        for item in order["line_items"]:
-            # Pull product metadata for HSN and usage unit
-            product_meta = item.get("meta_data", [])
-            hsn = ""
-            usage_unit = ""
-            for meta in product_meta:
-                if meta["key"].lower() == "hsn":
-                    hsn = meta["value"]
-                if meta["key"].lower() == "usage unit":
-                    usage_unit = meta["value"]
+            for item in order["line_items"]:
+                # Pull product metadata for HSN and usage unit
+                product_meta = item.get("meta_data", [])
+                hsn = ""
+                usage_unit = ""
+                for meta in product_meta:
+                    if meta["key"].lower() == "hsn":
+                        hsn = meta["value"]
+                    if meta["key"].lower() == "usage unit":
+                        usage_unit = meta["value"]
 
-            row = {
-                "Invoice Number": invoice_number,
-                "PurchaseOrder": order_id,
-                "Invoice Date": invoice_date,
-                "Invoice Status": order["status"].capitalize(),
-                "Customer Name": customer_name,
-                "Place of Supply": place_of_supply,
-                "Currency Code": currency,
-                "Item Name": item["name"],
-                "HSN/SAC": hsn,
-                "Item Type": item.get("type", "goods"),
-                "Quantity": item["quantity"],
-                "Usage unit": usage_unit,
-                "Item Price": item["price"],
-                "Is Inclusive Tax": "FALSE",
-                "Item Tax %": item.get("tax_class", "0"),
-                "Discount Type": "entity_level",
-                "Is Discount Before Tax": "TRUE",
-                "Entity Discount Amount": entity_discount,
-                "Shipping Charge": shipping_charge,
-                "Item Tax Exemption Reason": "ITEM EXEMPT FROM GST",
-                "Supply Type": "Exempted",
-                "GST Treatment": "consumer"
-            }
-            csv_rows.append(row)
+                row = {
+                    "Invoice Number": invoice_number,
+                    "PurchaseOrder": order_id,
+                    "Invoice Date": invoice_date,
+                    "Invoice Status": order["status"].capitalize(),
+                    "Customer Name": customer_name,
+                    "Place of Supply": place_of_supply,
+                    "Currency Code": currency,
+                    "Item Name": item["name"],
+                    "HSN/SAC": hsn,
+                    "Item Type": item.get("type", "goods"),
+                    "Quantity": item["quantity"],
+                    "Usage unit": usage_unit,
+                    "Item Price": item["price"],
+                    "Is Inclusive Tax": "FALSE",
+                    "Item Tax %": item.get("tax_class", "0"),
+                    "Discount Type": "entity_level",
+                    "Is Discount Before Tax": "TRUE",
+                    "Entity Discount Amount": entity_discount,
+                    "Shipping Charge": shipping_charge,
+                    "Item Tax Exemption Reason": "ITEM EXEMPT FROM GST",
+                    "Supply Type": "Exempted",
+                    "GST Treatment": "consumer"
+                }
+                csv_rows.append(row)
 
-    # Create DataFrame
-    df = pd.DataFrame(csv_rows)
-    st.dataframe(df.head(10))  # preview first 10 rows
+        # Create DataFrame
+        df = pd.DataFrame(csv_rows)
+        st.dataframe(df.head(10))  # preview first 10 rows
 
-    # ------------------------
-    # CSV download
-    csv_bytes = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="Download CSV",
-        data=csv_bytes,
-        file_name=f"orders_{start_date}_{end_date}.csv",
-        mime="text/csv"
-    )
+        # ------------------------
+        # Summary report
+        first_order_id = all_orders[0]["id"]
+        last_order_id = all_orders[-1]["id"]
+        first_invoice_number = f"{invoice_prefix}{start_sequence:05d}"
+        last_invoice_number = f"{invoice_prefix}{sequence_number - 1:05d}"
+
+        with st.expander("View Summary Report"):
+            st.subheader("Summary Report")
+            st.write(f"**Total Orders Processed:** {len(all_orders)}")
+            st.write(f"**Order IDs:** {first_order_id} → {last_order_id}")
+            st.write(f"**Invoice Numbers:** {first_invoice_number} → {last_invoice_number}")
+
+        # ------------------------
+        # CSV download
+        csv_bytes = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download CSV",
+            data=csv_bytes,
+            file_name=f"orders_{start_date}_{end_date}.csv",
+            mime="text/csv"
+        )

@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime
+from fpdf import FPDF
+import io
 
 # ------------------------
 # WooCommerce API settings (use Streamlit secrets for production)
@@ -122,7 +124,7 @@ if fetch_button:
         st.dataframe(df.head(10))  # preview first 10 rows
 
         # ------------------------
-        # Summary report
+        # Summary report details
         first_order_id = all_orders[0]["id"]
         last_order_id = all_orders[-1]["id"]
         first_invoice_number = f"{invoice_prefix}{start_sequence:05d}"
@@ -130,16 +132,40 @@ if fetch_button:
 
         with st.expander("View Summary Report"):
             st.subheader("Summary Report")
+            st.write(f"**Date Range:** {start_date} → {end_date}")
             st.write(f"**Total Orders Processed:** {len(all_orders)}")
             st.write(f"**Order IDs:** {first_order_id} → {last_order_id}")
             st.write(f"**Invoice Numbers:** {first_invoice_number} → {last_invoice_number}")
 
         # ------------------------
-        # CSV download
-        csv_bytes = df.to_csv(index=False).encode('utf-8')
+        # Generate Summary PDF
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", "B", 14)
+        pdf.cell(0, 10, "WooCommerce Orders Summary", ln=True, align="C")
+        pdf.ln(10)
+        pdf.set_font("Arial", "", 12)
+        pdf.cell(0, 8, f"Date Range: {start_date} → {end_date}", ln=True)
+        pdf.cell(0, 8, f"Total Orders Processed: {len(all_orders)}", ln=True)
+        pdf.cell(0, 8, f"Order IDs: {first_order_id} → {last_order_id}", ln=True)
+        pdf.cell(0, 8, f"Invoice Numbers: {first_invoice_number} → {last_invoice_number}", ln=True)
+
+        pdf_buffer = io.BytesIO()
+        pdf.output(pdf_buffer)
+        pdf_bytes = pdf_buffer.getvalue()
+
+        # ------------------------
+        # Download buttons
         st.download_button(
             label="Download CSV",
-            data=csv_bytes,
+            data=df.to_csv(index=False).encode("utf-8"),
             file_name=f"orders_{start_date}_{end_date}.csv",
             mime="text/csv"
+        )
+
+        st.download_button(
+            label="Download Summary PDF",
+            data=pdf_bytes,
+            file_name=f"summary_{start_date}_{end_date}.pdf",
+            mime="application/pdf"
         )

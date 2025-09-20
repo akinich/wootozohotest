@@ -9,6 +9,8 @@ st.write("DEBUG SECRETS:", st.secrets)
 st.title("WooCommerce to Zoho CSV Exporter")
 
 # WooCommerce API Settings
+st.write("DEBUG BEFORE ERROR:", st.secrets.get("woocommerce", "woocommerce missing"))
+
 WC_API_URL = "https://sustenance.co.in/wp-json/wc/v3"
 WC_CONSUMER_KEY = st.secrets["woocommerce"]["consumer_key"]
 WC_CONSUMER_SECRET = st.secrets["woocommerce"]["consumer_secret"]

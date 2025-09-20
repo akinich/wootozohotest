@@ -57,6 +57,9 @@ if fetch_button:
 
     st.success(f"Fetched {len(all_orders)} completed orders.")
 
+    # --- Fix: sort ascending by order ID so invoice numbers match order flow ---
+    all_orders.sort(key=lambda x: x["id"])
+
     # ------------------------
     # Transform orders into CSV rows
     csv_rows = []

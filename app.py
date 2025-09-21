@@ -10,11 +10,13 @@ from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
 
 # ------------------------
+# ------------------------
 # NEW: Display item database
 try:
-    item_db_df = pd.read_excel("item_database.xlsx")  # NEW: reads the Excel file
+    # Force HSN column to string to preserve leading zeros
+    item_db_df = pd.read_excel("item_database.xlsx", dtype={"HSN": str})  # NEW
     st.subheader("Item Database")
-    st.dataframe(item_db_df)  # NEW: display as interactive table
+    st.dataframe(item_db_df)  # display as interactive table
 except FileNotFoundError:
     st.warning("item_database.xlsx not found. Please upload it to the app folder.")  # NEW
 except Exception as e:

@@ -7,6 +7,16 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from datetime import datetime
 
+# ------------------------
+# WooCommerce API settings
+WC_API_URL = st.secrets.get("WC_API_URL")
+WC_CONSUMER_KEY = st.secrets.get("WC_CONSUMER_KEY")
+WC_CONSUMER_SECRET = st.secrets.get("WC_CONSUMER_SECRET")
+
+if not WC_API_URL or not WC_CONSUMER_KEY or not WC_CONSUMER_SECRET:
+    st.error("WooCommerce API credentials are missing. Please add them to Streamlit secrets.")
+    st.stop()
+
 # -----------------------------
 # STREAMLIT APP CONFIG
 # -----------------------------
@@ -17,9 +27,6 @@ st.set_page_config(page_title="WooCommerce Invoice Generator", layout="wide")
 # -----------------------------
 st.title("WooCommerce Invoice Generator")
 
-api_url = st.text_input("WooCommerce Store URL (e.g., https://mystore.com)")
-consumer_key = st.text_input("WooCommerce Consumer Key", type="password")
-consumer_secret = st.text_input("WooCommerce Consumer Secret", type="password")
 
 col1, col2 = st.columns(2)
 with col1:

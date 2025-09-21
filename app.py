@@ -4,6 +4,7 @@ import requests
 from datetime import datetime
 from dateutil.parser import parse  # safer date parsing
 from collections import Counter
+from io import BytesIO
 
 # ------------------------
 # WooCommerce API settings
@@ -161,36 +162,81 @@ if fetch_button:
 
         # Handle refunds
         refunds = order.get("refunds") or []
-        refund_total = 0.0
-        for r in refunds:
-            refund_total += to_float(r.get("amount") or r.get("total") or r.get("refund_total") or 0)
+        refund_total = sum(to_float(r.get("amount") or r.get("total") or r.get("refund_total") or 0) for r in refunds)
 
         net_order_total = order_total - refund_total
         total_revenue_by_order_total += net_order_total
 
     # ------------------------
-    # Summary report
+    # Summary metrics
     first_order_id = completed_orders[0]["id"] if completed_orders else None
     last_order_id = completed_orders[-1]["id"] if completed_orders else None
     first_invoice_number = f"{invoice_prefix}{start_sequence:05d}"
     last_invoice_number = f"{invoice_prefix}{sequence_number - 1:05d}" if completed_orders else None
 
-    with st.expander("View Summary Report"):
-        st.subheader("Summary Report")
-        st.write(f"**Total Orders Fetched:** {len(all_orders)}")
-        st.write("---")
-        st.write("### Orders by Status")
-        st.write(f"- Completed: **{get_status_count(['completed'])}**")
-        st.write(f"- Processing: **{get_status_count(['processing'])}**")
-        st.write(f"- On Hold: **{get_status_count(['on-hold','on_hold','on hold'])}**")
-        st.write(f"- Cancelled: **{get_status_count(['cancelled','canceled'])}**")
-        st.write(f"- Pending Payment: **{get_status_count(['pending','pending payment','pending-payment'])}**")
-        st.write("---")
-        if completed_orders:
-            st.write(f"**Completed Order ID Range:** {first_order_id} → {last_order_id}")
-            st.write(f"**Invoice Number Range:** {first_invoice_number} → {last_invoice_number}")
-        st.write("---")
-        st.write(f"**Total Revenue (WooCommerce order totals, net of refunds):** ₹ {total_revenue_by_order_total:,.2f}")
+    summary_metrics = {
+        "Metric": [
+            "Total Orders Fetched",
+            "Completed Orders",
+            "Processing Orders",
+            "On Hold Orders",
+            "Cancelled Orders",
+            "Pending Payment Orders",
+            "Completed Order ID Range",
+            "Invoice Number Range",
+            "Total Revenue (Net of Refunds)"
+        ],
+        "Value": [
+            len(all_orders),
+            get_status_count(['completed']),
+            get_status_count(['processing']),
+            get_status_count(['on-hold','on_hold','on hold']),
+            get_status_count(['cancelled','canceled']),
+            get_status_count(['pending','pending payment','pending-payment']),
+            f"{first_order_id} → {last_order_id}" if completed_orders else "",
+            f"{first_invoice_number} → {last_invoice_number}" if completed_orders else "",
+            f"₹ {total_revenue_by_order_total:,.2f}"
+        ]
+    }
+    summary_df = pd.DataFrame(summary_metrics)
+
+    # ------------------------
+    # Per-order details sheet
+    order_details_rows = []
+    sequence_number_temp = start_sequence
+    for order in completed_orders:
+        invoice_number_temp = f"{invoice_prefix}{sequence_number_temp:05d}"
+        sequence_number_temp += 1
+        order_total = to_float(order.get("total", 0))
+        refunds = order.get("refunds") or []
+        refund_total = sum(to_float(r.get("amount") or r.get("total") or r.get("refund_total") or 0) for r in refunds)
+        net_total = order_total - refund_total
+
+        order_details_rows.append({
+            "Invoice Number": invoice_number_temp,
+            "Order Number": order["id"],
+            "Date": parse(order["date_created"]).strftime("%Y-%m-%d %H:%M:%S"),
+            "Customer Name": f"{order['billing'].get('first_name','')} {order['billing'].get('last_name','')}".strip(),
+            "Order Total": net_total
+        })
+
+    order_details_df = pd.DataFrame(order_details_rows)
+
+    # ------------------------
+    # Export to Excel with two sheets
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        summary_df.to_excel(writer, index=False, sheet_name="Summary Metrics")
+        order_details_df.to_excel(writer, index=False, sheet_name="Order Details")
+        writer.save()
+    excel_data = output.getvalue()
+
+    st.download_button(
+        label="Download Summary Report (Excel)",
+        data=excel_data,
+        file_name=f"summary_report_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
     # ------------------------
     # CSV download for accounting

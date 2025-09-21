@@ -10,17 +10,22 @@ from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
 
 # ------------------------
-# ------------------------
 # NEW: Display item database
 try:
-    # Force HSN column to string to preserve leading zeros
-    item_db_df = pd.read_excel("item_database.xlsx", dtype={"HSN": str})  # NEW
+    item_db_df = pd.read_excel("item_database.xlsx", dtype={"HSN": str})
     st.subheader("Item Database")
-    st.dataframe(item_db_df)  # display as interactive table
+    st.dataframe(item_db_df)
+    # Create lowercase mapping: WooCommerce name -> Zoho name
+    name_mapping = {
+        str(row["woocommerce name"]).lower(): str(row["Zoho name"])
+        for _, row in item_db_df.iterrows()
+    }
 except FileNotFoundError:
-    st.warning("item_database.xlsx not found. Please upload it to the app folder.")  # NEW
+    st.warning("item_database.xlsx not found. Please upload it to the app folder.")
+    name_mapping = {}
 except Exception as e:
-    st.error(f"Error reading item_database.xlsx: {e}")  # NEW
+    st.error(f"Error reading item_database.xlsx: {e}")
+    name_mapping = {}
 
 # ------------------------
 # WooCommerce API settings
@@ -28,7 +33,6 @@ WC_API_URL = st.secrets.get("WC_API_URL")
 WC_CONSUMER_KEY = st.secrets.get("WC_CONSUMER_KEY")
 WC_CONSUMER_SECRET = st.secrets.get("WC_CONSUMER_SECRET")
 
-# CHANGE: Better secrets error message
 if not WC_API_URL or not WC_CONSUMER_KEY or not WC_CONSUMER_SECRET:
     missing = [k for k, v in {
         "WC_API_URL": WC_API_URL,
@@ -103,7 +107,7 @@ if fetch_button:
 
     all_orders.sort(key=lambda x: x["id"])
     status_counts = Counter(order["status"].lower() for order in all_orders)
-    def get_status_count(variants): return sum(status_counts.get(v, 0) for v in variants)
+    def get_status_count(variants): return sum(status_counts.get(v,0) for v in variants)
 
     # ------------------------
     # Transform completed orders into line-item CSV
@@ -111,7 +115,6 @@ if fetch_button:
     sequence_number = start_sequence
     completed_orders = [o for o in all_orders if o["status"].lower() == "completed"]
 
-    # CHANGE: Stop if no completed orders
     if not completed_orders:
         st.warning("No completed orders found in this date range.")
         st.stop()
@@ -123,27 +126,26 @@ if fetch_button:
         invoice_date = parse(order["date_created"]).strftime("%Y-%m-%d %H:%M:%S")
         customer_name = f"{order['billing'].get('first_name','')} {order['billing'].get('last_name','')}".strip()
         place_of_supply = order['billing'].get('state', '')
-        currency = order.get('currency', '')
-        shipping_charge = to_float(order.get('shipping_total', 0))
-        entity_discount = to_float(order.get('discount_total', 0))
+        currency = order.get('currency','')
+        shipping_charge = to_float(order.get('shipping_total',0))
+        entity_discount = to_float(order.get('discount_total',0))
 
         for item in order.get("line_items", []):
-            product_meta = item.get("meta_data", []) or []
+            product_meta = item.get("meta_data",[]) or []
             hsn = ""
             usage_unit = ""
             for meta in product_meta:
-                key = str(meta.get("key", "")).lower()
-                if key == "hsn":
-                    hsn = meta.get("value", "")
-                if key == "usage unit":
-                    usage_unit = meta.get("value", "")
+                key = str(meta.get("key","")).lower()
+                if key=="hsn":
+                    hsn_val = meta.get("value","")
+                    hsn = str(hsn_val).zfill(len(str(hsn_val)))  # preserve leading zeros
+                if key=="usage unit":
+                    usage_unit = meta.get("value","")
 
-            # CHANGE: Ensure Item Tax % is always numeric
-            tax_class = item.get("tax_class") or ""
-            try:
-                item_tax_pct = float(tax_class)
-            except (TypeError, ValueError):
-                item_tax_pct = 0.0
+            # Replace item name using item_database mapping (case-insensitive)
+            original_item_name = item.get("name","")
+            item_name_lower = str(original_item_name).lower()
+            item_name_final = name_mapping.get(item_name_lower, original_item_name)
 
             row = {
                 "Invoice Number": invoice_number,
@@ -153,21 +155,21 @@ if fetch_button:
                 "Customer Name": customer_name,
                 "Place of Supply": place_of_supply,
                 "Currency Code": currency,
-                "Item Name": item.get("name", ""),
+                "Item Name": item_name_final,
                 "HSN/SAC": hsn,
-                "Item Type": item.get("type", "goods"),
-                "Quantity": item.get("quantity", 0),
+                "Item Type": item.get("type","goods"),
+                "Quantity": item.get("quantity",0),
                 "Usage unit": usage_unit,
-                "Item Price": to_float(item.get("price", 0)),  # CHANGE: Ensure numeric
-                "Is Inclusive Tax": "FALSE",
-                "Item Tax %": item_tax_pct,  # CHANGE: numeric tax
-                "Discount Type": "entity_level",
-                "Is Discount Before Tax": "TRUE",
-                "Entity Discount Amount": entity_discount,
-                "Shipping Charge": shipping_charge,
-                "Item Tax Exemption Reason": "ITEM EXEMPT FROM GST",
-                "Supply Type": "Exempted",
-                "GST Treatment": "consumer"
+                "Item Price": to_float(item.get("price","")),
+                "Is Inclusive Tax":"FALSE",
+                "Item Tax %": item.get("tax_class") or "0",
+                "Discount Type":"entity_level",
+                "Is Discount Before Tax":"TRUE",
+                "Entity Discount Amount":entity_discount,
+                "Shipping Charge":shipping_charge,
+                "Item Tax Exemption Reason":"ITEM EXEMPT FROM GST",
+                "Supply Type":"Exempted",
+                "GST Treatment":"consumer"
             }
             csv_rows.append(row)
 
@@ -178,7 +180,7 @@ if fetch_button:
     # Revenue only from WooCommerce totals
     total_revenue_by_order_total = 0.0
     for order in completed_orders:
-        order_total = to_float(order.get("total", 0))
+        order_total = to_float(order.get("total",0))
         refunds = order.get("refunds") or []
         refund_total = sum(to_float(r.get("amount") or r.get("total") or r.get("refund_total") or 0) for r in refunds)
         net_total = order_total - refund_total
@@ -192,7 +194,7 @@ if fetch_button:
     # ------------------------
     # Summary metrics
     summary_metrics = {
-        "Metric": [
+        "Metric":[
             "Total Orders Fetched",
             "Completed Orders",
             "Processing Orders",
@@ -203,13 +205,13 @@ if fetch_button:
             "Invoice Number Range",
             "Total Revenue (Net of Refunds)"
         ],
-        "Value": [
+        "Value":[
             len(all_orders),
             get_status_count(['completed']),
             get_status_count(['processing']),
-            get_status_count(['on-hold', 'on_hold', 'on hold']),
-            get_status_count(['cancelled', 'canceled']),
-            get_status_count(['pending', 'pending payment', 'pending-payment']),
+            get_status_count(['on-hold','on_hold','on hold']),
+            get_status_count(['cancelled','canceled']),
+            get_status_count(['pending','pending payment','pending-payment']),
             f"{first_order_id} → {last_order_id}" if completed_orders else "",
             f"{first_invoice_number} → {last_invoice_number}" if completed_orders else "",
             total_revenue_by_order_total
@@ -224,7 +226,7 @@ if fetch_button:
     for order in completed_orders:
         invoice_number_temp = f"{invoice_prefix}{sequence_number_temp:05d}"
         sequence_number_temp += 1
-        order_total = to_float(order.get("total", 0))
+        order_total = to_float(order.get("total",0))
         refunds = order.get("refunds") or []
         refund_total = sum(to_float(r.get("amount") or r.get("total") or r.get("refund_total") or 0) for r in refunds)
         net_total = order_total - refund_total

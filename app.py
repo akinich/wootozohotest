@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 from datetime import datetime
 from dateutil.parser import parse  # safer date parsing
+from collections import Counter
 
 # ------------------------
 # WooCommerce API settings (use Streamlit secrets for production)
@@ -33,13 +34,13 @@ if start_date > end_date:
 fetch_button = st.button("Fetch Orders", disabled=(start_date > end_date))
 
 if fetch_button:
-    st.info("Preparing to fetch completed orders from WooCommerce...")
+    st.info("Preparing to fetch orders from WooCommerce...")
 
     # Convert to WooCommerce ISO format
     start_iso = start_date.strftime("%Y-%m-%dT00:00:00")
     end_iso = end_date.strftime("%Y-%m-%dT23:59:59")
 
-    # Pagination loop
+    # Pagination loop - Fetch ALL orders in range
     all_orders = []
     page = 1
     try:
@@ -50,7 +51,6 @@ if fetch_button:
                     params={
                         "after": start_iso,
                         "before": end_iso,
-                        "status": "completed",
                         "per_page": 100,
                         "page": page
                     },
@@ -71,18 +71,25 @@ if fetch_button:
 
     # Stop if no orders found
     if not all_orders:
-        st.warning("No completed orders found in this date range.")
+        st.warning("No orders found in this date range.")
         st.stop()
 
     # --- Sort ascending by order ID for invoice sequence ---
     all_orders.sort(key=lambda x: x["id"])
 
     # ------------------------
-    # Transform WooCommerce orders into CSV rows
+    # Count orders by status
+    status_counts = Counter(order["status"].lower() for order in all_orders)
+
+    # ------------------------
+    # Transform only COMPLETED orders into CSV rows
     csv_rows = []
     sequence_number = start_sequence
 
     for order in all_orders:
+        if order["status"].lower() != "completed":
+            continue  # only completed orders are exported to CSV
+
         order_id = order["id"]
         invoice_number = f"{invoice_prefix}{sequence_number:05d}"
         sequence_number += 1
@@ -140,17 +147,37 @@ if fetch_button:
     st.dataframe(df.head(50))
 
     # ------------------------
+    # Calculate total revenue
+    total_revenue = 0
+    for row in csv_rows:
+        line_total = float(row["Item Price"]) * int(row["Quantity"])
+        total_revenue += line_total
+        total_revenue += float(row["Shipping Charge"])
+        total_revenue -= float(row["Entity Discount Amount"])
+
+    # ------------------------
     # Summary report
-    first_order_id = all_orders[0]["id"]
-    last_order_id = all_orders[-1]["id"]
+    completed_orders = [o for o in all_orders if o["status"].lower() == "completed"]
+    first_order_id = completed_orders[0]["id"] if completed_orders else None
+    last_order_id = completed_orders[-1]["id"] if completed_orders else None
     first_invoice_number = f"{invoice_prefix}{start_sequence:05d}"
-    last_invoice_number = f"{invoice_prefix}{sequence_number - 1:05d}"
+    last_invoice_number = f"{invoice_prefix}{sequence_number - 1:05d}" if completed_orders else None
 
     with st.expander("View Summary Report"):
         st.subheader("Summary Report")
-        st.write(f"**Total Orders Processed:** {len(all_orders)}")
-        st.write(f"**Order IDs:** {first_order_id} → {last_order_id}")
-        st.write(f"**Invoice Numbers:** {first_invoice_number} → {last_invoice_number}")
+        st.write(f"**Total Orders Fetched:** {len(all_orders)}")
+        st.write("---")
+        st.write("### Orders by Status")
+        st.write(f"- Completed: **{status_counts.get('completed', 0)}**")
+        st.write(f"- Processing: **{status_counts.get('processing', 0)}**")
+        st.write(f"- On Hold: **{status_counts.get('on-hold', 0)}**")
+        st.write(f"- Cancelled: **{status_counts.get('cancelled', 0)}**")
+        st.write(f"- Pending Payment: **{status_counts.get('pending payment', 0)}**")
+        st.write("---")
+        if completed_orders:
+            st.write(f"**Completed Order ID Range:** {first_order_id} → {last_order_id}")
+            st.write(f"**Invoice Number Range:** {first_invoice_number} → {last_invoice_number}")
+        st.write(f"**Total Revenue (Completed Orders):** ₹ {total_revenue:,.2f}")
 
     # ------------------------
     # CSV download
@@ -158,8 +185,9 @@ if fetch_button:
     download_filename = f"orders_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
 
     st.download_button(
-        label="Download CSV",
+        label="Download CSV (Completed Orders Only)",
         data=csv_bytes,
         file_name=download_filename,
         mime="text/csv"
     )
+

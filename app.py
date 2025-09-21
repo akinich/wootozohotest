@@ -33,6 +33,14 @@ if start_date > end_date:
 
 fetch_button = st.button("Fetch Orders", disabled=(start_date > end_date))
 
+def to_float(x):
+    try:
+        if x is None or x == "":
+            return 0.0
+        return float(x)
+    except Exception:
+        return 0.0
+
 if fetch_button:
     st.info("Preparing to fetch orders from WooCommerce...")
 
@@ -57,14 +65,12 @@ if fetch_button:
                     auth=(WC_CONSUMER_KEY, WC_CONSUMER_SECRET),
                     timeout=30  # avoid hanging
                 )
-                response.raise_for_status()  # raise if HTTP error occurs
+                response.raise_for_status()
                 orders = response.json()
-
                 if not orders:
-                    break  # no more pages
+                    break
                 all_orders.extend(orders)
                 page += 1
-
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching orders from WooCommerce: {e}")
         st.stop()
@@ -78,8 +84,11 @@ if fetch_button:
     all_orders.sort(key=lambda x: x["id"])
 
     # ------------------------
-    # Count orders by status
+    # Count orders by status (normalize common variants)
     status_counts = Counter(order["status"].lower() for order in all_orders)
+
+    def get_status_count(variants):
+        return sum(status_counts.get(v, 0) for v in variants)
 
     # ------------------------
     # Transform only COMPLETED orders into CSV rows
@@ -88,7 +97,7 @@ if fetch_button:
 
     for order in all_orders:
         if order["status"].lower() != "completed":
-            continue  # only completed orders are exported to CSV
+            continue  # only export completed orders to CSV
 
         order_id = order["id"]
         invoice_number = f"{invoice_prefix}{sequence_number:05d}"
@@ -97,23 +106,26 @@ if fetch_button:
         # Safe date parsing (handles timezone)
         invoice_date = parse(order["date_created"]).strftime("%Y-%m-%d %H:%M:%S")
 
-        customer_name = f"{order['billing']['first_name']} {order['billing']['last_name']}".strip()
-        place_of_supply = order['billing']['state']
-        currency = order['currency']
-        shipping_charge = float(order['shipping_total']) if order['shipping_total'] else 0
-        entity_discount = float(order['discount_total']) if order['discount_total'] else 0
+        customer_name = f"{order['billing'].get('first_name','')} {order['billing'].get('last_name','')}".strip()
+        place_of_supply = order['billing'].get('state', '')
+        currency = order.get('currency', '')
+        shipping_charge = to_float(order.get('shipping_total', 0))
+        entity_discount = to_float(order.get('discount_total', 0))
 
-        for item in order["line_items"]:
+        for item in order.get("line_items", []):
             # Pull product metadata for HSN and usage unit
-            product_meta = item.get("meta_data", [])
+            product_meta = item.get("meta_data", []) or []
             hsn = ""
             usage_unit = ""
             for meta in product_meta:
-                if meta["key"].lower() == "hsn":
-                    hsn = meta["value"]
-                if meta["key"].lower() == "usage unit":
-                    usage_unit = meta["value"]
+                key = str(meta.get("key", "")).lower()
+                if key == "hsn":
+                    hsn = meta.get("value", "")
+                if key == "usage unit":
+                    usage_unit = meta.get("value", "")
 
+            # Prefer line-level 'total' if present (already accounts for line discounts)
+            item_price = item.get("price", "")
             row = {
                 "Invoice Number": invoice_number,
                 "PurchaseOrder": order_id,
@@ -122,14 +134,14 @@ if fetch_button:
                 "Customer Name": customer_name,
                 "Place of Supply": place_of_supply,
                 "Currency Code": currency,
-                "Item Name": item["name"],
+                "Item Name": item.get("name", ""),
                 "HSN/SAC": hsn,
                 "Item Type": item.get("type", "goods"),
-                "Quantity": item["quantity"],
+                "Quantity": item.get("quantity", 0),
                 "Usage unit": usage_unit,
-                "Item Price": item["price"],
+                "Item Price": item_price,
                 "Is Inclusive Tax": "FALSE",
-                "Item Tax %": item.get("tax_class") or "0",  # safe default
+                "Item Tax %": item.get("tax_class") or "0",
                 "Discount Type": "entity_level",
                 "Is Discount Before Tax": "TRUE",
                 "Entity Discount Amount": entity_discount,
@@ -147,17 +159,48 @@ if fetch_button:
     st.dataframe(df.head(50))
 
     # ------------------------
-    # Calculate total revenue
-    total_revenue = 0
-    for row in csv_rows:
-        line_total = float(row["Item Price"]) * int(row["Quantity"])
-        total_revenue += line_total
-        total_revenue += float(row["Shipping Charge"])
-        total_revenue -= float(row["Entity Discount Amount"])
+    # Calculate total revenue correctly (sum of order["total"] for completed orders minus refunds)
+    completed_orders = [o for o in all_orders if o["status"].lower() == "completed"]
+
+    total_revenue_by_order_total = 0.0
+    total_reconstructed_from_items = 0.0
+
+    for order in completed_orders:
+        order_total = to_float(order.get("total", 0))
+
+        # Subtract refunds (if any)
+        refunds = order.get("refunds") or []
+        refund_total = 0.0
+        for r in refunds:
+            # Refund structure can vary; try common keys
+            r_amount = r.get("amount") or r.get("total") or r.get("refund_total") or 0
+            refund_total += to_float(r_amount)
+
+        net_order_total = order_total - refund_total
+        total_revenue_by_order_total += net_order_total
+
+        # Reconstruct from line items (line_item["total"] is preferred)
+        items_sum = 0.0
+        for item in order.get("line_items", []):
+            # Prefer item['total'] (post-line-discount), fallback to price * qty
+            item_line_total = to_float(item.get("total") or 0)
+            if item_line_total == 0:
+                # fallback
+                item_line_total = to_float(item.get("price", 0)) * to_float(item.get("quantity", 0))
+            items_sum += item_line_total
+
+        # Add shipping & fees, subtract discounts (these are order-level)
+        items_sum += to_float(order.get("shipping_total", 0))
+        items_sum += to_float(order.get("fee_total", 0))
+        items_sum -= to_float(order.get("discount_total", 0))
+
+        # subtract refunds from reconstructed (same refunds applied at order level)
+        items_sum -= refund_total
+
+        total_reconstructed_from_items += items_sum
 
     # ------------------------
     # Summary report
-    completed_orders = [o for o in all_orders if o["status"].lower() == "completed"]
     first_order_id = completed_orders[0]["id"] if completed_orders else None
     last_order_id = completed_orders[-1]["id"] if completed_orders else None
     first_invoice_number = f"{invoice_prefix}{start_sequence:05d}"
@@ -168,16 +211,22 @@ if fetch_button:
         st.write(f"**Total Orders Fetched:** {len(all_orders)}")
         st.write("---")
         st.write("### Orders by Status")
-        st.write(f"- Completed: **{status_counts.get('completed', 0)}**")
-        st.write(f"- Processing: **{status_counts.get('processing', 0)}**")
-        st.write(f"- On Hold: **{status_counts.get('on-hold', 0)}**")
-        st.write(f"- Cancelled: **{status_counts.get('cancelled', 0)}**")
-        st.write(f"- Pending Payment: **{status_counts.get('pending payment', 0)}**")
+        st.write(f"- Completed: **{get_status_count(['completed'])}**")
+        st.write(f"- Processing: **{get_status_count(['processing'])}**")
+        st.write(f"- On Hold: **{get_status_count(['on-hold','on_hold','on hold'])}**")
+        st.write(f"- Cancelled: **{get_status_count(['cancelled','canceled'])}**")
+        st.write(f"- Pending Payment: **{get_status_count(['pending','pending payment','pending-payment'])}**")
         st.write("---")
         if completed_orders:
             st.write(f"**Completed Order ID Range:** {first_order_id} → {last_order_id}")
             st.write(f"**Invoice Number Range:** {first_invoice_number} → {last_invoice_number}")
-        st.write(f"**Total Revenue (Completed Orders):** ₹ {total_revenue:,.2f}")
+        st.write("---")
+        st.write(f"**Total Revenue (WooCommerce order totals, completed orders):** ₹ {total_revenue_by_order_total:,.2f}")
+        st.write(f"**Total Revenue (Reconstructed from line items + shipping - discounts):** ₹ {total_reconstructed_from_items:,.2f}")
+        diff = total_reconstructed_from_items - total_revenue_by_order_total
+        st.write(f"**Difference (reconstructed - order_totals):** ₹ {diff:,.2f}")
+        if abs(diff) > 0.01:
+            st.info("Difference detected — this is usually due to rounding, line-level vs order-level discounts, or fees/taxes included/excluded. Use the order totals value for actual collected revenue.")
 
     # ------------------------
     # CSV download
@@ -190,4 +239,3 @@ if fetch_button:
         file_name=download_filename,
         mime="text/csv"
     )
-

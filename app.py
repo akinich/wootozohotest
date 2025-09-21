@@ -18,11 +18,13 @@ if not WC_API_URL or not WC_CONSUMER_KEY or not WC_CONSUMER_SECRET:
     st.error("WooCommerce API credentials are missing. Please add them to Streamlit secrets.")
     st.stop()
 
-st.title("WooCommerce → Accounting CSV Export Tool")
+st.title("WooCommerce → Accounting CSV & Excel Export Tool")
 
+# Date input fields
 start_date = st.date_input("Start Date")
 end_date = st.date_input("End Date")
 
+# Invoice number customization
 invoice_prefix = st.text_input("Invoice Prefix", value="ECHE/2526/")
 start_sequence = st.number_input("Starting Sequence Number", min_value=1, value=608)
 
@@ -31,6 +33,7 @@ if start_date > end_date:
 
 fetch_button = st.button("Fetch Orders", disabled=(start_date > end_date))
 
+# ------------------------
 def to_float(x):
     try:
         if x is None or x == "":
@@ -45,6 +48,7 @@ if fetch_button:
     start_iso = start_date.strftime("%Y-%m-%dT00:00:00")
     end_iso = end_date.strftime("%Y-%m-%dT23:59:59")
 
+    # Fetch orders with pagination
     all_orders = []
     page = 1
     try:
@@ -79,7 +83,8 @@ if fetch_button:
     status_counts = Counter(order["status"].lower() for order in all_orders)
     def get_status_count(variants): return sum(status_counts.get(v,0) for v in variants)
 
-    # --- Line-item CSV ---
+    # ------------------------
+    # Transform completed orders into line-item CSV
     csv_rows = []
     sequence_number = start_sequence
     for order in all_orders:
@@ -131,7 +136,8 @@ if fetch_button:
     df = pd.DataFrame(csv_rows)
     st.dataframe(df.head(50))
 
-    # --- Revenue ---
+    # ------------------------
+    # Revenue only from WooCommerce totals
     completed_orders = [o for o in all_orders if o["status"].lower()=="completed"]
     total_revenue_by_order_total = 0.0
     for order in completed_orders:
@@ -146,7 +152,8 @@ if fetch_button:
     first_invoice_number = f"{invoice_prefix}{start_sequence:05d}"
     last_invoice_number = f"{invoice_prefix}{sequence_number-1:05d}" if completed_orders else None
 
-    # --- Summary metrics ---
+    # ------------------------
+    # Summary metrics
     summary_metrics = {
         "Metric":[
             "Total Orders Fetched",
@@ -173,7 +180,8 @@ if fetch_button:
     }
     summary_df = pd.DataFrame(summary_metrics)
 
-    # --- Per-order details ---
+    # ------------------------
+    # Order Details sheet
     order_details_rows = []
     sequence_number_temp = start_sequence
     for order in completed_orders:
@@ -192,9 +200,21 @@ if fetch_button:
         })
     order_details_df = pd.DataFrame(order_details_rows)
 
-    # --- Export to Excel with bold headers and auto column widths ---
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    # Add Grand Total row
+    grand_total = order_details_df["Order Total"].sum()
+    grand_total_row = {
+        "Invoice Number": "Grand Total",
+        "Order Number": "",
+        "Date": "",
+        "Customer Name": "",
+        "Order Total": grand_total
+    }
+    order_details_df = pd.concat([order_details_df, pd.DataFrame([grand_total_row])], ignore_index=True)
+
+    # ------------------------
+    # Excel export
+    excel_output = BytesIO()
+    with pd.ExcelWriter(excel_output, engine='openpyxl') as writer:
         summary_df.to_excel(writer, index=False, sheet_name="Summary Metrics")
         order_details_df.to_excel(writer, index=False, sheet_name="Order Details")
         for sheet_name in writer.sheets:
@@ -207,21 +227,26 @@ if fetch_button:
             for col in ws.columns:
                 max_length = max(len(str(c.value)) if c.value is not None else 0 for c in col) + 2
                 ws.column_dimensions[get_column_letter(col[0].column)].width = max_length
-    excel_data = output.getvalue()
+    excel_data = excel_output.getvalue()
+
+    # ------------------------
+    # CSV
+    csv_bytes = df.to_csv(index=False).encode('utf-8')
+    download_csv_filename = f"orders_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
+    download_excel_filename = f"summary_report_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx"
+
+    # ------------------------
+    # Download buttons
+    st.download_button(
+        label="Download CSV (Completed Orders Only)",
+        data=csv_bytes,
+        file_name=download_csv_filename,
+        mime="text/csv"
+    )
 
     st.download_button(
         label="Download Summary Report (Excel)",
         data=excel_data,
-        file_name=f"summary_report_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+        file_name=download_excel_filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-    # --- CSV download for accounting ---
-    csv_bytes = df.to_csv(index=False).encode('utf-8')
-    download_filename = f"orders_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
-    st.download_button(
-        label="Download CSV (Completed Orders Only)",
-        data=csv_bytes,
-        file_name=download_filename,
-        mime="text/csv"
     )

@@ -4,30 +4,29 @@ import pandas as pd
 from io import BytesIO
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
-from reportlab.pdfbase.pdfmetrics import stringWidth
 from datetime import datetime
-
-# ------------------------
-# WooCommerce API settings
-WC_API_URL = st.secrets.get("WC_API_URL")
-WC_CONSUMER_KEY = st.secrets.get("WC_CONSUMER_KEY")
-WC_CONSUMER_SECRET = st.secrets.get("WC_CONSUMER_SECRET")
-
-if not WC_API_URL or not WC_CONSUMER_KEY or not WC_CONSUMER_SECRET:
-    st.error("WooCommerce API credentials are missing. Please add them to Streamlit secrets.")
-    st.stop()
 
 # -----------------------------
 # STREAMLIT APP CONFIG
 # -----------------------------
 st.set_page_config(page_title="WooCommerce Invoice Generator", layout="wide")
 
+st.title("WooCommerce Invoice Generator")
+
+# -----------------------------
+# LOAD SECRETS
+# -----------------------------
+try:
+    api_url = st.secrets["woocommerce"]["api_url"]
+    consumer_key = st.secrets["woocommerce"]["consumer_key"]
+    consumer_secret = st.secrets["woocommerce"]["consumer_secret"]
+except KeyError:
+    st.error("WooCommerce secrets not found. Please configure `.streamlit/secrets.toml`.")
+    st.stop()
+
 # -----------------------------
 # USER INPUTS
 # -----------------------------
-st.title("WooCommerce Invoice Generator")
-
-
 col1, col2 = st.columns(2)
 with col1:
     start_date = st.date_input("Start Date")
@@ -86,8 +85,8 @@ def draw_invoice(c, invoice_number, order_number, customer_name):
 # MAIN PROCESS
 # -----------------------------
 if st.button("Generate Invoices"):
-    if not (api_url and consumer_key and consumer_secret and start_date and end_date):
-        st.warning("Please fill in all fields before generating invoices.")
+    if not (start_date and end_date):
+        st.warning("Please select a start and end date before generating invoices.")
     else:
         st.info("Fetching orders, please wait...")
         all_orders = fetch_orders()

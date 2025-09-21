@@ -5,6 +5,7 @@ from datetime import datetime
 from dateutil.parser import parse
 from collections import Counter
 from io import BytesIO
+from zipfile import ZipFile
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
 
@@ -201,8 +202,6 @@ if fetch_button:
             "Order Total": net_total
         })
     order_details_df = pd.DataFrame(order_details_rows)
-
-    # Add Grand Total row
     grand_total = order_details_df["Order Total"].sum()
     grand_total_row = {
         "Invoice Number": "Grand Total",
@@ -214,18 +213,16 @@ if fetch_button:
     order_details_df = pd.concat([order_details_df, pd.DataFrame([grand_total_row])], ignore_index=True)
 
     # ------------------------
-    # Excel export
+    # Prepare Excel
     excel_output = BytesIO()
     with pd.ExcelWriter(excel_output, engine='openpyxl') as writer:
         summary_df.to_excel(writer, index=False, sheet_name="Summary Metrics")
         order_details_df.to_excel(writer, index=False, sheet_name="Order Details")
         for sheet_name in writer.sheets:
             ws = writer.sheets[sheet_name]
-            # Bold headers
             for cell in ws[1]:
                 cell.font = Font(bold=True)
                 cell.alignment = Alignment(horizontal="center")
-            # Adjust column widths
             for col in ws.columns:
                 max_length = max(len(str(c.value)) if c.value is not None else 0 for c in col) + 2
                 ws.column_dimensions[get_column_letter(col[0].column)].width = max_length
@@ -234,37 +231,21 @@ if fetch_button:
     # ------------------------
     # CSV
     csv_bytes = df.to_csv(index=False).encode('utf-8')
-    download_csv_filename = f"orders_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
-    download_excel_filename = f"summary_report_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx"
 
     # ------------------------
-    # --- Session State flags to avoid page refresh ---
-    if "csv_ready" not in st.session_state:
-        st.session_state.csv_ready = False
-    if "excel_ready" not in st.session_state:
-        st.session_state.excel_ready = False
+    # Create combined ZIP
+    zip_buffer = BytesIO()
+    with ZipFile(zip_buffer, "w") as zip_file:
+        zip_file.writestr(f"orders_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv", csv_bytes)
+        zip_file.writestr(f"summary_report_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx", excel_data)
 
-    def csv_clicked():
-        st.session_state.csv_ready = True
+    zip_buffer.seek(0)
 
-    def excel_clicked():
-        st.session_state.excel_ready = True
-
-    # --- Download Buttons ---
+    # ------------------------
+    # Download ZIP button
     st.download_button(
-        label="Download CSV (Completed Orders Only)",
-        data=csv_bytes,
-        file_name=download_csv_filename,
-        mime="text/csv",
-        key="csv_btn",
-        on_click=csv_clicked
-    )
-
-    st.download_button(
-        label="Download Summary Report (Excel)",
-        data=excel_data,
-        file_name=download_excel_filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="excel_btn",
-        on_click=excel_clicked
+        label="Download CSV + Excel (Combined ZIP)",
+        data=zip_buffer,
+        file_name=f"woocommerce_export_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.zip",
+        mime="application/zip"
     )

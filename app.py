@@ -112,6 +112,7 @@ if fetch_button:
     # ------------------------
     # Transform completed orders into line-item CSV
     csv_rows = []
+    replacements_log = []
     sequence_number = start_sequence
     completed_orders = [o for o in all_orders if o["status"].lower() == "completed"]
 
@@ -147,6 +148,12 @@ if fetch_button:
             item_name_lower = str(original_item_name).lower()
             item_name_final = name_mapping.get(item_name_lower, original_item_name)
 
+            if item_name_lower in name_mapping:
+                replacements_log.append({
+                    "Original WooCommerce Name": original_item_name,
+                    "Replaced Zoho Name": item_name_final
+                })
+
             row = {
                 "Invoice Number": invoice_number,
                 "PurchaseOrder": order_id,
@@ -175,6 +182,12 @@ if fetch_button:
 
     df = pd.DataFrame(csv_rows)
     st.dataframe(df.head(50))
+
+    # ------------------------
+    # Show Replacements Log
+    if replacements_log:
+        st.subheader("Item Name Replacements Log")
+        st.dataframe(pd.DataFrame(replacements_log))
 
     # ------------------------
     # Revenue only from WooCommerce totals

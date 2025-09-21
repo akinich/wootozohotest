@@ -20,6 +20,7 @@ if not WC_API_URL or not WC_CONSUMER_KEY or not WC_CONSUMER_SECRET:
 
 st.title("WooCommerce → Accounting CSV & Excel Export Tool")
 
+# ------------------------
 # Date input fields
 start_date = st.date_input("Start Date")
 end_date = st.date_input("End Date")
@@ -42,6 +43,7 @@ def to_float(x):
     except Exception:
         return 0.0
 
+# ------------------------
 if fetch_button:
     st.info("Fetching orders from WooCommerce...")
 
@@ -236,17 +238,33 @@ if fetch_button:
     download_excel_filename = f"summary_report_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx"
 
     # ------------------------
-    # Download buttons
+    # --- Session State flags to avoid page refresh ---
+    if "csv_ready" not in st.session_state:
+        st.session_state.csv_ready = False
+    if "excel_ready" not in st.session_state:
+        st.session_state.excel_ready = False
+
+    def csv_clicked():
+        st.session_state.csv_ready = True
+
+    def excel_clicked():
+        st.session_state.excel_ready = True
+
+    # --- Download Buttons ---
     st.download_button(
         label="Download CSV (Completed Orders Only)",
         data=csv_bytes,
         file_name=download_csv_filename,
-        mime="text/csv"
+        mime="text/csv",
+        key="csv_btn",
+        on_click=csv_clicked
     )
 
     st.download_button(
         label="Download Summary Report (Excel)",
         data=excel_data,
         file_name=download_excel_filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="excel_btn",
+        on_click=excel_clicked
     )

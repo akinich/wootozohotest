@@ -2,12 +2,11 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime
-from dateutil.parser import parse
+from dateutil.parser import parse  # safer date parsing
 from collections import Counter
 from io import BytesIO
 from zipfile import ZipFile
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, Alignment
+import os
 
 # ------------------------
 # WooCommerce API settings
@@ -19,9 +18,9 @@ if not WC_API_URL or not WC_CONSUMER_KEY or not WC_CONSUMER_SECRET:
     st.error("WooCommerce API credentials are missing. Please add them to Streamlit secrets.")
     st.stop()
 
-st.title("WooCommerce → Accounting CSV & Excel Export Tool")
-
 # ------------------------
+st.title("WooCommerce → Accounting CSV/Excel Export Tool")
+
 # Date input fields
 start_date = st.date_input("Start Date")
 end_date = st.date_input("End Date")
@@ -35,7 +34,6 @@ if start_date > end_date:
 
 fetch_button = st.button("Fetch Orders", disabled=(start_date > end_date))
 
-# ------------------------
 def to_float(x):
     try:
         if x is None or x == "":
@@ -45,13 +43,30 @@ def to_float(x):
         return 0.0
 
 # ------------------------
-if fetch_button:
-    st.info("Fetching orders from WooCommerce...")
+# Load item database for CSV mapping
+ITEM_DB_PATH = "Item database.xlsx"
+item_lookup = {}
+if os.path.exists(ITEM_DB_PATH):
+    item_db_df = pd.read_excel(ITEM_DB_PATH, dtype=str)  # HSN as string
+    for _, row in item_db_df.iterrows():
+        woocommerce_name = str(row.get("woocommerce name", "")).strip()
+        item_lookup[woocommerce_name] = {
+            "zoho_name": str(row.get("zoho name", "")).strip(),
+            "hsn": str(row.get("hsn", "")).strip(),
+            "usage_unit": str(row.get("usage count", "")).strip()
+        }
+else:
+    st.warning(f"Item database not found at {ITEM_DB_PATH}. Item mapping will be skipped.")
 
+# ------------------------
+if fetch_button:
+    st.info("Preparing to fetch orders from WooCommerce...")
+
+    # Convert to WooCommerce ISO format
     start_iso = start_date.strftime("%Y-%m-%dT00:00:00")
     end_iso = end_date.strftime("%Y-%m-%dT23:59:59")
 
-    # Fetch orders with pagination
+    # Pagination loop - Fetch ALL orders in range
     all_orders = []
     page = 1
     try:
@@ -75,42 +90,65 @@ if fetch_button:
                 all_orders.extend(orders)
                 page += 1
     except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching orders: {e}")
+        st.error(f"Error fetching orders from WooCommerce: {e}")
         st.stop()
 
     if not all_orders:
         st.warning("No orders found in this date range.")
         st.stop()
 
+    # Sort ascending by order ID for invoice sequence
     all_orders.sort(key=lambda x: x["id"])
-    status_counts = Counter(order["status"].lower() for order in all_orders)
-    def get_status_count(variants): return sum(status_counts.get(v,0) for v in variants)
 
     # ------------------------
-    # Transform completed orders into line-item CSV
+    # Count orders by status
+    status_counts = Counter(order["status"].lower() for order in all_orders)
+    def get_status_count(variants):
+        return sum(status_counts.get(v, 0) for v in variants)
+
+    # ------------------------
+    # Transform only COMPLETED orders into CSV rows
     csv_rows = []
     sequence_number = start_sequence
+
     for order in all_orders:
         if order["status"].lower() != "completed":
-            continue
+            continue  # only export completed orders to CSV
+
         order_id = order["id"]
         invoice_number = f"{invoice_prefix}{sequence_number:05d}"
         sequence_number += 1
+
+        # Safe date parsing
         invoice_date = parse(order["date_created"]).strftime("%Y-%m-%d %H:%M:%S")
+
         customer_name = f"{order['billing'].get('first_name','')} {order['billing'].get('last_name','')}".strip()
         place_of_supply = order['billing'].get('state', '')
-        currency = order.get('currency','')
-        shipping_charge = to_float(order.get('shipping_total',0))
-        entity_discount = to_float(order.get('discount_total',0))
+        currency = order.get('currency', '')
+        shipping_charge = to_float(order.get('shipping_total', 0))
+        entity_discount = to_float(order.get('discount_total', 0))
 
         for item in order.get("line_items", []):
-            product_meta = item.get("meta_data",[]) or []
+            # Pull product metadata
+            product_meta = item.get("meta_data", []) or []
             hsn = ""
             usage_unit = ""
             for meta in product_meta:
-                key = str(meta.get("key","")).lower()
-                if key=="hsn": hsn=meta.get("value","")
-                if key=="usage unit": usage_unit=meta.get("value","")
+                key = str(meta.get("key", "")).lower()
+                if key == "hsn":
+                    hsn = meta.get("value", "")
+                if key == "usage unit":
+                    usage_unit = meta.get("value", "")
+
+            item_name = item.get("name", "")
+
+            # ------------------------
+            # Map from Item database if available
+            if item_name in item_lookup:
+                item_name = item_lookup[item_name]["zoho_name"] or item_name
+                hsn = item_lookup[item_name]["hsn"] or hsn
+                usage_unit = item_lookup[item_name]["usage_unit"] or usage_unit
+
             row = {
                 "Invoice Number": invoice_number,
                 "PurchaseOrder": order_id,
@@ -119,132 +157,100 @@ if fetch_button:
                 "Customer Name": customer_name,
                 "Place of Supply": place_of_supply,
                 "Currency Code": currency,
-                "Item Name": item.get("name",""),
+                "Item Name": item_name,
                 "HSN/SAC": hsn,
-                "Item Type": item.get("type","goods"),
-                "Quantity": item.get("quantity",0),
+                "Item Type": item.get("type", "goods"),
+                "Quantity": item.get("quantity", 0),
                 "Usage unit": usage_unit,
-                "Item Price": item.get("price",""),
-                "Is Inclusive Tax":"FALSE",
-                "Item Tax %":item.get("tax_class") or "0",
-                "Discount Type":"entity_level",
-                "Is Discount Before Tax":"TRUE",
-                "Entity Discount Amount":entity_discount,
-                "Shipping Charge":shipping_charge,
-                "Item Tax Exemption Reason":"ITEM EXEMPT FROM GST",
-                "Supply Type":"Exempted",
-                "GST Treatment":"consumer"
+                "Item Price": item.get("price", ""),
+                "Is Inclusive Tax": "FALSE",
+                "Item Tax %": item.get("tax_class") or "0",
+                "Discount Type": "entity_level",
+                "Is Discount Before Tax": "TRUE",
+                "Entity Discount Amount": entity_discount,
+                "Shipping Charge": shipping_charge,
+                "Item Tax Exemption Reason": "ITEM EXEMPT FROM GST",
+                "Supply Type": "Exempted",
+                "GST Treatment": "consumer"
             }
             csv_rows.append(row)
+
     df = pd.DataFrame(csv_rows)
     st.dataframe(df.head(50))
 
     # ------------------------
-    # Revenue only from WooCommerce totals
-    completed_orders = [o for o in all_orders if o["status"].lower()=="completed"]
+    # Revenue calculation only from WooCommerce order totals
+    completed_orders = [o for o in all_orders if o["status"].lower() == "completed"]
     total_revenue_by_order_total = 0.0
     for order in completed_orders:
-        order_total = to_float(order.get("total",0))
+        order_total = to_float(order.get("total", 0))
         refunds = order.get("refunds") or []
         refund_total = sum(to_float(r.get("amount") or r.get("total") or r.get("refund_total") or 0) for r in refunds)
-        net_total = order_total - refund_total
-        total_revenue_by_order_total += net_total
-
-    first_order_id = completed_orders[0]["id"] if completed_orders else None
-    last_order_id = completed_orders[-1]["id"] if completed_orders else None
-    first_invoice_number = f"{invoice_prefix}{start_sequence:05d}"
-    last_invoice_number = f"{invoice_prefix}{sequence_number-1:05d}" if completed_orders else None
+        total_revenue_by_order_total += order_total - refund_total
 
     # ------------------------
     # Summary metrics
-    summary_metrics = {
-        "Metric":[
-            "Total Orders Fetched",
-            "Completed Orders",
-            "Processing Orders",
-            "On Hold Orders",
-            "Cancelled Orders",
-            "Pending Payment Orders",
-            "Completed Order ID Range",
-            "Invoice Number Range",
-            "Total Revenue (Net of Refunds)"
-        ],
-        "Value":[
-            len(all_orders),
-            get_status_count(['completed']),
-            get_status_count(['processing']),
-            get_status_count(['on-hold','on_hold','on hold']),
-            get_status_count(['cancelled','canceled']),
-            get_status_count(['pending','pending payment','pending-payment']),
-            f"{first_order_id} → {last_order_id}" if completed_orders else "",
-            f"{first_invoice_number} → {last_invoice_number}" if completed_orders else "",
-            total_revenue_by_order_total
-        ]
-    }
-    summary_df = pd.DataFrame(summary_metrics)
+    first_order_id = completed_orders[0]["id"] if completed_orders else None
+    last_order_id = completed_orders[-1]["id"] if completed_orders else None
+    first_invoice_number = f"{invoice_prefix}{start_sequence:05d}"
+    last_invoice_number = f"{invoice_prefix}{sequence_number - 1:05d}" if completed_orders else None
+
+    with st.expander("View Summary Report"):
+        st.subheader("Summary Report")
+        st.write(f"**Total Orders Fetched:** {len(all_orders)}")
+        st.write("---")
+        st.write("### Orders by Status")
+        st.write(f"- Completed: **{get_status_count(['completed'])}**")
+        st.write(f"- Processing: **{get_status_count(['processing'])}**")
+        st.write(f"- On Hold: **{get_status_count(['on-hold','on_hold','on hold'])}**")
+        st.write(f"- Cancelled: **{get_status_count(['cancelled','canceled'])}**")
+        st.write(f"- Pending Payment: **{get_status_count(['pending','pending payment','pending-payment'])}**")
+        st.write("---")
+        if completed_orders:
+            st.write(f"**Completed Order ID Range:** {first_order_id} → {last_order_id}")
+            st.write(f"**Invoice Number Range:** {first_invoice_number} → {last_invoice_number}")
+        st.write("---")
+        st.write(f"**Total Revenue (WooCommerce order totals, net of refunds):** ₹ {total_revenue_by_order_total:,.2f}")
 
     # ------------------------
-    # Order Details sheet
-    order_details_rows = []
-    sequence_number_temp = start_sequence
+    # Generate summary CSV for download
+    summary_csv_data = []
     for order in completed_orders:
-        invoice_number_temp = f"{invoice_prefix}{sequence_number_temp:05d}"
-        sequence_number_temp += 1
-        order_total = to_float(order.get("total",0))
-        refunds = order.get("refunds") or []
-        refund_total = sum(to_float(r.get("amount") or r.get("total") or r.get("refund_total") or 0) for r in refunds)
-        net_total = order_total - refund_total
-        order_details_rows.append({
-            "Invoice Number": invoice_number_temp,
-            "Order Number": order["id"],
-            "Date": parse(order["date_created"]).strftime("%Y-%m-%d %H:%M:%S"),
-            "Customer Name": f"{order['billing'].get('first_name','')} {order['billing'].get('last_name','')}".strip(),
-            "Order Total": net_total
+        order_id = order["id"]
+        invoice_number = f"{invoice_prefix}{start_sequence:05d}"
+        start_sequence += 1
+        invoice_date = parse(order["date_created"]).strftime("%Y-%m-%d %H:%M:%S")
+        customer_name = f"{order['billing'].get('first_name','')} {order['billing'].get('last_name','')}".strip()
+        order_total = to_float(order.get("total", 0))
+        summary_csv_data.append({
+            "Invoice Number": invoice_number,
+            "Order Number": order_id,
+            "Invoice Date": invoice_date,
+            "Customer Name": customer_name,
+            "Order Total": order_total
         })
-    order_details_df = pd.DataFrame(order_details_rows)
-    grand_total = order_details_df["Order Total"].sum()
-    grand_total_row = {
-        "Invoice Number": "Grand Total",
-        "Order Number": "",
-        "Date": "",
-        "Customer Name": "",
-        "Order Total": grand_total
-    }
-    order_details_df = pd.concat([order_details_df, pd.DataFrame([grand_total_row])], ignore_index=True)
+    summary_df = pd.DataFrame(summary_csv_data)
 
     # ------------------------
-    # Prepare Excel
-    excel_output = BytesIO()
-    with pd.ExcelWriter(excel_output, engine='openpyxl') as writer:
+    # Generate Excel file (optional)
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
         summary_df.to_excel(writer, index=False, sheet_name="Summary Metrics")
-        order_details_df.to_excel(writer, index=False, sheet_name="Order Details")
-        for sheet_name in writer.sheets:
-            ws = writer.sheets[sheet_name]
-            for cell in ws[1]:
-                cell.font = Font(bold=True)
-                cell.alignment = Alignment(horizontal="center")
-            for col in ws.columns:
-                max_length = max(len(str(c.value)) if c.value is not None else 0 for c in col) + 2
-                ws.column_dimensions[get_column_letter(col[0].column)].width = max_length
-    excel_data = excel_output.getvalue()
+        df.to_excel(writer, index=False, sheet_name="Order Details")
+    excel_data = output.getvalue()
 
     # ------------------------
-    # CSV
-    csv_bytes = df.to_csv(index=False).encode('utf-8')
-
-    # ------------------------
-    # Create combined ZIP
+    # ZIP both files for single download
     zip_buffer = BytesIO()
     with ZipFile(zip_buffer, "w") as zip_file:
-        zip_file.writestr(f"orders_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv", csv_bytes)
-        zip_file.writestr(f"summary_report_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx", excel_data)
-
+        zip_file.writestr(f"orders_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv",
+                          df.to_csv(index=False).encode('utf-8'))
+        zip_file.writestr(f"summary_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+                          excel_data)
     zip_buffer.seek(0)
 
-    # ------------------------
-    # Download ZIP button
     st.download_button(
-        label="Download CSV + Excel (Combined ZIP)",
+        label="Download CSV + Excel (ZIP)",
         data=zip_buffer,
         file_name=f"woocommerce_export_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.zip",
         mime="application/zip"

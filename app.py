@@ -228,7 +228,6 @@ if fetch_button:
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         summary_df.to_excel(writer, index=False, sheet_name="Summary Metrics")
         order_details_df.to_excel(writer, index=False, sheet_name="Order Details")
-        writer.save()
     excel_data = output.getvalue()
 
     st.download_button(

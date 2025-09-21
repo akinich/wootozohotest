@@ -10,6 +10,17 @@ from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
 
 # ------------------------
+# NEW: Display item database
+try:
+    item_db_df = pd.read_excel("item_database.xlsx")  # NEW: reads the Excel file
+    st.subheader("Item Database")
+    st.dataframe(item_db_df)  # NEW: display as interactive table
+except FileNotFoundError:
+    st.warning("item_database.xlsx not found. Please upload it to the app folder.")  # NEW
+except Exception as e:
+    st.error(f"Error reading item_database.xlsx: {e}")  # NEW
+
+# ------------------------
 # WooCommerce API settings
 WC_API_URL = st.secrets.get("WC_API_URL")
 WC_CONSUMER_KEY = st.secrets.get("WC_CONSUMER_KEY")
@@ -25,7 +36,7 @@ if not WC_API_URL or not WC_CONSUMER_KEY or not WC_CONSUMER_SECRET:
     st.error("WooCommerce API credentials missing: " + ", ".join(missing))
     st.stop()
 
-st.title("WooCommerce → Zoho Accounting CSV & Excel Export Tool")
+st.title("WooCommerce → Accounting CSV & Excel Export Tool")
 
 # ------------------------
 # Date input fields
@@ -34,7 +45,7 @@ end_date = st.date_input("End Date")
 
 # Invoice number customization
 invoice_prefix = st.text_input("Invoice Prefix", value="ECHE/2526/")
-start_sequence = st.number_input("Starting Sequence Number", min_value=1, value=1)
+start_sequence = st.number_input("Starting Sequence Number", min_value=1, value=608)
 
 if start_date > end_date:
     st.error("Start date cannot be after end date.")
@@ -145,10 +156,9 @@ if fetch_button:
                 "Item Type": item.get("type", "goods"),
                 "Quantity": item.get("quantity", 0),
                 "Usage unit": usage_unit,
-                # CHANGE: Ensure Item Price is numeric
-                "Item Price": to_float(item.get("price", 0)),
+                "Item Price": to_float(item.get("price", 0)),  # CHANGE: Ensure numeric
                 "Is Inclusive Tax": "FALSE",
-                "Item Tax %": item_tax_pct,
+                "Item Tax %": item_tax_pct,  # CHANGE: numeric tax
                 "Discount Type": "entity_level",
                 "Is Discount Before Tax": "TRUE",
                 "Entity Discount Amount": entity_discount,

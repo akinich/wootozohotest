@@ -152,15 +152,11 @@ if fetch_button:
     st.dataframe(df.head(50))
 
     # ------------------------
-    # Correct Revenue Calculation + Reconciliation
+    # Revenue calculation only from WooCommerce order totals
     completed_orders = [o for o in all_orders if o["status"].lower() == "completed"]
 
     total_revenue_by_order_total = 0.0
-    total_reconstructed_from_items = 0.0
-    reconciliation_rows = []
-
     for order in completed_orders:
-        order_id = order["id"]
         order_total = to_float(order.get("total", 0))
 
         # Handle refunds
@@ -171,39 +167,6 @@ if fetch_button:
 
         net_order_total = order_total - refund_total
         total_revenue_by_order_total += net_order_total
-
-        # Reconstruct from line items
-        items_sum = 0.0
-        for item in order.get("line_items", []):
-            item_line_total = to_float(item.get("total") or 0)
-            if item_line_total == 0:
-                item_line_total = to_float(item.get("price", 0)) * to_float(item.get("quantity", 0))
-            items_sum += item_line_total
-
-        # Add shipping & fees, subtract discounts
-        items_sum += to_float(order.get("shipping_total", 0))
-        items_sum += to_float(order.get("fee_total", 0))
-        items_sum -= to_float(order.get("discount_total", 0))
-        items_sum -= refund_total  # Adjust for refunds
-
-        total_reconstructed_from_items += items_sum
-
-        # Add to reconciliation table
-        reconciliation_rows.append({
-            "Order ID": order_id,
-            "Order Total (WooCommerce)": order_total,
-            "Refund Total": refund_total,
-            "Net Total (Order - Refunds)": net_order_total,
-            "Reconstructed Total": items_sum,
-            "Difference": items_sum - net_order_total
-        })
-
-    # Build reconciliation dataframe
-    rec_df = pd.DataFrame(reconciliation_rows)
-
-    # Flag mismatches where difference > 0.01
-    mismatch_threshold = 0.01
-    mismatched_orders = rec_df[rec_df["Difference"].abs() > mismatch_threshold]
 
     # ------------------------
     # Summary report
@@ -228,29 +191,6 @@ if fetch_button:
             st.write(f"**Invoice Number Range:** {first_invoice_number} → {last_invoice_number}")
         st.write("---")
         st.write(f"**Total Revenue (WooCommerce order totals, net of refunds):** ₹ {total_revenue_by_order_total:,.2f}")
-        st.write(f"**Total Revenue (Reconstructed from line items):** ₹ {total_reconstructed_from_items:,.2f}")
-        diff = total_reconstructed_from_items - total_revenue_by_order_total
-        st.write(f"**Overall Difference:** ₹ {diff:,.2f}")
-        if abs(diff) > mismatch_threshold:
-            st.warning("Differences detected! Check the reconciliation table below for details.")
-
-    # ------------------------
-    # Reconciliation table display
-    st.subheader("Reconciliation Table (Per Order)")
-    st.dataframe(rec_df)
-
-    if not mismatched_orders.empty:
-        st.subheader("⚠️ Orders with Mismatched Totals")
-        st.dataframe(mismatched_orders)
-
-    # Download reconciliation CSV
-    rec_csv = rec_df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="Download Reconciliation Report",
-        data=rec_csv,
-        file_name=f"reconciliation_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv",
-        mime="text/csv"
-    )
 
     # ------------------------
     # CSV download for accounting

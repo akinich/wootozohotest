@@ -6,12 +6,11 @@ from dateutil.parser import parse  # safer date parsing
 from collections import Counter
 
 # ------------------------
-# WooCommerce API settings (use Streamlit secrets for production)
+# WooCommerce API settings
 WC_API_URL = st.secrets.get("WC_API_URL")
 WC_CONSUMER_KEY = st.secrets.get("WC_CONSUMER_KEY")
 WC_CONSUMER_SECRET = st.secrets.get("WC_CONSUMER_SECRET")
 
-# Validate secrets to avoid using hardcoded defaults
 if not WC_API_URL or not WC_CONSUMER_KEY or not WC_CONSUMER_SECRET:
     st.error("WooCommerce API credentials are missing. Please add them to Streamlit secrets.")
     st.stop()
@@ -27,7 +26,6 @@ end_date = st.date_input("End Date")
 invoice_prefix = st.text_input("Invoice Prefix", value="ECHE/2526/")
 start_sequence = st.number_input("Starting Sequence Number", min_value=1, value=608)
 
-# Validate date range
 if start_date > end_date:
     st.error("Start date cannot be after end date.")
 
@@ -63,7 +61,7 @@ if fetch_button:
                         "page": page
                     },
                     auth=(WC_CONSUMER_KEY, WC_CONSUMER_SECRET),
-                    timeout=30  # avoid hanging
+                    timeout=30
                 )
                 response.raise_for_status()
                 orders = response.json()
@@ -75,16 +73,15 @@ if fetch_button:
         st.error(f"Error fetching orders from WooCommerce: {e}")
         st.stop()
 
-    # Stop if no orders found
     if not all_orders:
         st.warning("No orders found in this date range.")
         st.stop()
 
-    # --- Sort ascending by order ID for invoice sequence ---
+    # Sort ascending by order ID for invoice sequence
     all_orders.sort(key=lambda x: x["id"])
 
     # ------------------------
-    # Count orders by status (normalize common variants)
+    # Count orders by status
     status_counts = Counter(order["status"].lower() for order in all_orders)
 
     def get_status_count(variants):
@@ -103,7 +100,7 @@ if fetch_button:
         invoice_number = f"{invoice_prefix}{sequence_number:05d}"
         sequence_number += 1
 
-        # Safe date parsing (handles timezone)
+        # Safe date parsing
         invoice_date = parse(order["date_created"]).strftime("%Y-%m-%d %H:%M:%S")
 
         customer_name = f"{order['billing'].get('first_name','')} {order['billing'].get('last_name','')}".strip()
@@ -113,7 +110,7 @@ if fetch_button:
         entity_discount = to_float(order.get('discount_total', 0))
 
         for item in order.get("line_items", []):
-            # Pull product metadata for HSN and usage unit
+            # Pull product metadata
             product_meta = item.get("meta_data", []) or []
             hsn = ""
             usage_unit = ""
@@ -124,7 +121,6 @@ if fetch_button:
                 if key == "usage unit":
                     usage_unit = meta.get("value", "")
 
-            # Prefer line-level 'total' if present (already accounts for line discounts)
             item_price = item.get("price", "")
             row = {
                 "Invoice Number": invoice_number,
@@ -152,52 +148,62 @@ if fetch_button:
             }
             csv_rows.append(row)
 
-    # Create DataFrame
     df = pd.DataFrame(csv_rows)
-
-    # Limit preview for performance
     st.dataframe(df.head(50))
 
     # ------------------------
-    # Calculate total revenue correctly (sum of order["total"] for completed orders minus refunds)
+    # Correct Revenue Calculation + Reconciliation
     completed_orders = [o for o in all_orders if o["status"].lower() == "completed"]
 
     total_revenue_by_order_total = 0.0
     total_reconstructed_from_items = 0.0
+    reconciliation_rows = []
 
     for order in completed_orders:
+        order_id = order["id"]
         order_total = to_float(order.get("total", 0))
 
-        # Subtract refunds (if any)
+        # Handle refunds
         refunds = order.get("refunds") or []
         refund_total = 0.0
         for r in refunds:
-            # Refund structure can vary; try common keys
-            r_amount = r.get("amount") or r.get("total") or r.get("refund_total") or 0
-            refund_total += to_float(r_amount)
+            refund_total += to_float(r.get("amount") or r.get("total") or r.get("refund_total") or 0)
 
         net_order_total = order_total - refund_total
         total_revenue_by_order_total += net_order_total
 
-        # Reconstruct from line items (line_item["total"] is preferred)
+        # Reconstruct from line items
         items_sum = 0.0
         for item in order.get("line_items", []):
-            # Prefer item['total'] (post-line-discount), fallback to price * qty
             item_line_total = to_float(item.get("total") or 0)
             if item_line_total == 0:
-                # fallback
                 item_line_total = to_float(item.get("price", 0)) * to_float(item.get("quantity", 0))
             items_sum += item_line_total
 
-        # Add shipping & fees, subtract discounts (these are order-level)
+        # Add shipping & fees, subtract discounts
         items_sum += to_float(order.get("shipping_total", 0))
         items_sum += to_float(order.get("fee_total", 0))
         items_sum -= to_float(order.get("discount_total", 0))
-
-        # subtract refunds from reconstructed (same refunds applied at order level)
-        items_sum -= refund_total
+        items_sum -= refund_total  # Adjust for refunds
 
         total_reconstructed_from_items += items_sum
+
+        # Add to reconciliation table
+        reconciliation_rows.append({
+            "Order ID": order_id,
+            "Order Total (WooCommerce)": order_total,
+            "Refund Total": refund_total,
+            "Net Total (Order - Refunds)": net_order_total,
+            "Reconstructed Total": items_sum,
+            "Difference": items_sum - net_order_total
+        })
+
+    # Build reconciliation dataframe
+    rec_df = pd.DataFrame(reconciliation_rows)
+
+    # Flag mismatches where difference > 0.01
+    mismatch_threshold = 0.01
+    mismatched_orders = rec_df[rec_df["Difference"].abs() > mismatch_threshold]
 
     # ------------------------
     # Summary report
@@ -221,15 +227,33 @@ if fetch_button:
             st.write(f"**Completed Order ID Range:** {first_order_id} → {last_order_id}")
             st.write(f"**Invoice Number Range:** {first_invoice_number} → {last_invoice_number}")
         st.write("---")
-        st.write(f"**Total Revenue (WooCommerce order totals, completed orders):** ₹ {total_revenue_by_order_total:,.2f}")
-        st.write(f"**Total Revenue (Reconstructed from line items + shipping - discounts):** ₹ {total_reconstructed_from_items:,.2f}")
+        st.write(f"**Total Revenue (WooCommerce order totals, net of refunds):** ₹ {total_revenue_by_order_total:,.2f}")
+        st.write(f"**Total Revenue (Reconstructed from line items):** ₹ {total_reconstructed_from_items:,.2f}")
         diff = total_reconstructed_from_items - total_revenue_by_order_total
-        st.write(f"**Difference (reconstructed - order_totals):** ₹ {diff:,.2f}")
-        if abs(diff) > 0.01:
-            st.info("Difference detected — this is usually due to rounding, line-level vs order-level discounts, or fees/taxes included/excluded. Use the order totals value for actual collected revenue.")
+        st.write(f"**Overall Difference:** ₹ {diff:,.2f}")
+        if abs(diff) > mismatch_threshold:
+            st.warning("Differences detected! Check the reconciliation table below for details.")
 
     # ------------------------
-    # CSV download
+    # Reconciliation table display
+    st.subheader("Reconciliation Table (Per Order)")
+    st.dataframe(rec_df)
+
+    if not mismatched_orders.empty:
+        st.subheader("⚠️ Orders with Mismatched Totals")
+        st.dataframe(mismatched_orders)
+
+    # Download reconciliation CSV
+    rec_csv = rec_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="Download Reconciliation Report",
+        data=rec_csv,
+        file_name=f"reconciliation_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv",
+        mime="text/csv"
+    )
+
+    # ------------------------
+    # CSV download for accounting
     csv_bytes = df.to_csv(index=False).encode('utf-8')
     download_filename = f"orders_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
 

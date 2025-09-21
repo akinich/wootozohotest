@@ -1,15 +1,12 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime
-from dateutil.parser import parse  # safer date parsing
-from collections import Counter
 from io import BytesIO
 from zipfile import ZipFile
+from datetime import datetime
 import os
 
-# ------------------------
-# WooCommerce API settings
+# === WOO API CREDENTIALS ===
 WC_API_URL = st.secrets.get("WC_API_URL")
 WC_CONSUMER_KEY = st.secrets.get("WC_CONSUMER_KEY")
 WC_CONSUMER_SECRET = st.secrets.get("WC_CONSUMER_SECRET")
@@ -18,240 +15,148 @@ if not WC_API_URL or not WC_CONSUMER_KEY or not WC_CONSUMER_SECRET:
     st.error("WooCommerce API credentials are missing. Please add them to Streamlit secrets.")
     st.stop()
 
-# ------------------------
-st.title("WooCommerce → Accounting CSV/Excel Export Tool")
+# === FUNCTIONS ===
+def fetch_orders(start_date, end_date):
+    """Fetch WooCommerce orders between start_date and end_date"""
+    url = f"{WC_API_URL}/orders"
+    params = {
+        "consumer_key": WC_CONSUMER_KEY,
+        "consumer_secret": WC_CONSUMER_SECRET,
+        "after": f"{start_date}T00:00:00",
+        "before": f"{end_date}T23:59:59",
+        "per_page": 100
+    }
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    return response.json()
 
-# Date input fields
-start_date = st.date_input("Start Date")
-end_date = st.date_input("End Date")
-
-# Invoice number customization
-invoice_prefix = st.text_input("Invoice Prefix", value="ECHE/2526/")
-start_sequence = st.number_input("Starting Sequence Number", min_value=1, value=608)
-
-if start_date > end_date:
-    st.error("Start date cannot be after end date.")
-
-fetch_button = st.button("Fetch Orders", disabled=(start_date > end_date))
-
-def to_float(x):
-    try:
-        if x is None or x == "":
-            return 0.0
-        return float(x)
-    except Exception:
-        return 0.0
-
-# ------------------------
-# Load item database for CSV mapping
-ITEM_DB_PATH = "Item database.xlsx"
-item_lookup = {}
-if os.path.exists(ITEM_DB_PATH):
-    item_db_df = pd.read_excel(ITEM_DB_PATH, dtype=str)  # HSN as string
-    for _, row in item_db_df.iterrows():
-        woocommerce_name = str(row.get("woocommerce name", "")).strip()
-        item_lookup[woocommerce_name] = {
-            "zoho_name": str(row.get("zoho name", "")).strip(),
-            "hsn": str(row.get("hsn", "")).strip(),
-            "usage_unit": str(row.get("usage count", "")).strip()
-        }
-else:
-    st.warning(f"Item database not found at {ITEM_DB_PATH}. Item mapping will be skipped.")
-
-# ------------------------
-if fetch_button:
-    st.info("Preparing to fetch orders from WooCommerce...")
-
-    # Convert to WooCommerce ISO format
-    start_iso = start_date.strftime("%Y-%m-%dT00:00:00")
-    end_iso = end_date.strftime("%Y-%m-%dT23:59:59")
-
-    # Pagination loop - Fetch ALL orders in range
-    all_orders = []
-    page = 1
-    try:
-        with st.spinner("Fetching orders from WooCommerce..."):
-            while True:
-                response = requests.get(
-                    f"{WC_API_URL}/orders",
-                    params={
-                        "after": start_iso,
-                        "before": end_iso,
-                        "per_page": 100,
-                        "page": page
-                    },
-                    auth=(WC_CONSUMER_KEY, WC_CONSUMER_SECRET),
-                    timeout=30
-                )
-                response.raise_for_status()
-                orders = response.json()
-                if not orders:
-                    break
-                all_orders.extend(orders)
-                page += 1
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching orders from WooCommerce: {e}")
+def load_item_database():
+    """Load item_database.xlsx from the app folder"""
+    files_in_dir = [f.lower() for f in os.listdir(".")]
+    if "item_database.xlsx" not in files_in_dir:
+        st.error("item_database.xlsx not found in the app directory.")
         st.stop()
 
-    if not all_orders:
-        st.warning("No orders found in this date range.")
+    df = pd.read_excel("item_database.xlsx")
+
+    # Validate required columns
+    required_cols = {"no", "woocommerce name", "zoho name", "hsn", "usage count"}
+    df_cols_lower = set(col.lower() for col in df.columns)
+    if not required_cols.issubset(df_cols_lower):
+        st.error(f"item_database.xlsx is missing required columns. Expected: {required_cols}")
         st.stop()
 
-    # Sort ascending by order ID for invoice sequence
-    all_orders.sort(key=lambda x: x["id"])
+    st.write("Item database loaded successfully. Preview below:")
+    st.dataframe(df.head())  # show first 5 rows to confirm
+    return df
 
-    # ------------------------
-    # Count orders by status
-    status_counts = Counter(order["status"].lower() for order in all_orders)
-    def get_status_count(variants):
-        return sum(status_counts.get(v, 0) for v in variants)
+def create_summary_and_csv(order_data, item_db):
+    """Create the order DataFrame and summary based on Woo data and item database mapping"""
 
-    # ------------------------
-    # Transform only COMPLETED orders into CSV rows
-    csv_rows = []
-    sequence_number = start_sequence
+    records = []
+    for order in order_data:
+        order_number = order["number"]
+        order_date = order["date_created"]
+        customer_name = order["billing"]["first_name"] + " " + order["billing"]["last_name"]
+        order_total = float(order["total"])
 
-    for order in all_orders:
-        if order["status"].lower() != "completed":
-            continue  # only export completed orders to CSV
+        # Loop through line items
+        for item in order["line_items"]:
+            wc_item_name = item["name"]
 
-        order_id = order["id"]
-        invoice_number = f"{invoice_prefix}{sequence_number:05d}"
-        sequence_number += 1
+            # Match with item database (case-insensitive exact match)
+            match = item_db[item_db["woocommerce name"].str.lower() == wc_item_name.lower()]
+            if not match.empty:
+                zoho_name = match.iloc[0]["zoho name"]
+                hsn = str(match.iloc[0]["hsn"])  # Keep leading zeros
+                usage_count = match.iloc[0]["usage count"]
+            else:
+                zoho_name = wc_item_name
+                hsn = ""
+                usage_count = ""
 
-        # Safe date parsing
-        invoice_date = parse(order["date_created"]).strftime("%Y-%m-%d %H:%M:%S")
-
-        customer_name = f"{order['billing'].get('first_name','')} {order['billing'].get('last_name','')}".strip()
-        place_of_supply = order['billing'].get('state', '')
-        currency = order.get('currency', '')
-        shipping_charge = to_float(order.get('shipping_total', 0))
-        entity_discount = to_float(order.get('discount_total', 0))
-
-        for item in order.get("line_items", []):
-            # Pull product metadata
-            product_meta = item.get("meta_data", []) or []
-            hsn = ""
-            usage_unit = ""
-            for meta in product_meta:
-                key = str(meta.get("key", "")).lower()
-                if key == "hsn":
-                    hsn = meta.get("value", "")
-                if key == "usage unit":
-                    usage_unit = meta.get("value", "")
-
-            item_name = item.get("name", "")
-
-            # ------------------------
-            # Map from Item database if available
-            if item_name in item_lookup:
-                item_name = item_lookup[item_name]["zoho_name"] or item_name
-                hsn = item_lookup[item_name]["hsn"] or hsn
-                usage_unit = item_lookup[item_name]["usage_unit"] or usage_unit
-
-            row = {
-                "Invoice Number": invoice_number,
-                "PurchaseOrder": order_id,
-                "Invoice Date": invoice_date,
-                "Invoice Status": order["status"].capitalize(),
+            records.append({
+                "Invoice Number": "",  # Placeholder
+                "Order Number": order_number,
+                "Date": order_date,
                 "Customer Name": customer_name,
-                "Place of Supply": place_of_supply,
-                "Currency Code": currency,
-                "Item Name": item_name,
-                "HSN/SAC": hsn,
-                "Item Type": item.get("type", "goods"),
-                "Quantity": item.get("quantity", 0),
-                "Usage unit": usage_unit,
-                "Item Price": item.get("price", ""),
-                "Is Inclusive Tax": "FALSE",
-                "Item Tax %": item.get("tax_class") or "0",
-                "Discount Type": "entity_level",
-                "Is Discount Before Tax": "TRUE",
-                "Entity Discount Amount": entity_discount,
-                "Shipping Charge": shipping_charge,
-                "Item Tax Exemption Reason": "ITEM EXEMPT FROM GST",
-                "Supply Type": "Exempted",
-                "GST Treatment": "consumer"
-            }
-            csv_rows.append(row)
+                "Item Name": zoho_name,
+                "HSN": hsn,
+                "Usage Count": usage_count,
+                "Order Total": order_total
+            })
 
-    df = pd.DataFrame(csv_rows)
-    st.dataframe(df.head(50))
+    df = pd.DataFrame(records)
 
-    # ------------------------
-    # Revenue calculation only from WooCommerce order totals
-    completed_orders = [o for o in all_orders if o["status"].lower() == "completed"]
-    total_revenue_by_order_total = 0.0
-    for order in completed_orders:
-        order_total = to_float(order.get("total", 0))
-        refunds = order.get("refunds") or []
-        refund_total = sum(to_float(r.get("amount") or r.get("total") or r.get("refund_total") or 0) for r in refunds)
-        total_revenue_by_order_total += order_total - refund_total
+    # Create summary table
+    summary = df.groupby("Order Number").agg({
+        "Order Total": "first",
+        "Customer Name": "first"
+    }).reset_index()
 
-    # ------------------------
-    # Summary metrics
-    first_order_id = completed_orders[0]["id"] if completed_orders else None
-    last_order_id = completed_orders[-1]["id"] if completed_orders else None
-    first_invoice_number = f"{invoice_prefix}{start_sequence:05d}"
-    last_invoice_number = f"{invoice_prefix}{sequence_number - 1:05d}" if completed_orders else None
+    # Add grand total
+    grand_total = df["Order Total"].sum()
+    summary.loc[len(summary)] = ["Grand Total", "", grand_total]
 
-    with st.expander("View Summary Report"):
-        st.subheader("Summary Report")
-        st.write(f"**Total Orders Fetched:** {len(all_orders)}")
-        st.write("---")
-        st.write("### Orders by Status")
-        st.write(f"- Completed: **{get_status_count(['completed'])}**")
-        st.write(f"- Processing: **{get_status_count(['processing'])}**")
-        st.write(f"- On Hold: **{get_status_count(['on-hold','on_hold','on hold'])}**")
-        st.write(f"- Cancelled: **{get_status_count(['cancelled','canceled'])}**")
-        st.write(f"- Pending Payment: **{get_status_count(['pending','pending payment','pending-payment'])}**")
-        st.write("---")
-        if completed_orders:
-            st.write(f"**Completed Order ID Range:** {first_order_id} → {last_order_id}")
-            st.write(f"**Invoice Number Range:** {first_invoice_number} → {last_invoice_number}")
-        st.write("---")
-        st.write(f"**Total Revenue (WooCommerce order totals, net of refunds):** ₹ {total_revenue_by_order_total:,.2f}")
+    return df, summary
 
-    # ------------------------
-    # Generate summary CSV for download
-    summary_csv_data = []
-    for order in completed_orders:
-        order_id = order["id"]
-        invoice_number = f"{invoice_prefix}{start_sequence:05d}"
-        start_sequence += 1
-        invoice_date = parse(order["date_created"]).strftime("%Y-%m-%d %H:%M:%S")
-        customer_name = f"{order['billing'].get('first_name','')} {order['billing'].get('last_name','')}".strip()
-        order_total = to_float(order.get("total", 0))
-        summary_csv_data.append({
-            "Invoice Number": invoice_number,
-            "Order Number": order_id,
-            "Invoice Date": invoice_date,
-            "Customer Name": customer_name,
-            "Order Total": order_total
-        })
-    summary_df = pd.DataFrame(summary_csv_data)
-
-    # ------------------------
-    # Generate Excel file (optional)
+def create_excel(summary_df):
+    """Generate Excel file with nice formatting"""
     output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        summary_df.to_excel(writer, index=False, sheet_name="Summary Metrics")
-        df.to_excel(writer, index=False, sheet_name="Order Details")
-    excel_data = output.getvalue()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        summary_df.to_excel(writer, index=False, sheet_name="Summary")
 
-    # ------------------------
-    # ZIP both files for single download
-    zip_buffer = BytesIO()
-    with ZipFile(zip_buffer, "w") as zip_file:
-        zip_file.writestr(f"orders_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv",
-                          df.to_csv(index=False).encode('utf-8'))
-        zip_file.writestr(f"summary_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
-                          excel_data)
-    zip_buffer.seek(0)
+        # Auto-adjust column width
+        workbook = writer.book
+        worksheet = writer.sheets["Summary"]
+        for idx, col in enumerate(summary_df.columns):
+            max_len = max(summary_df[col].astype(str).map(len).max(), len(col))
+            worksheet.set_column(idx, idx, max_len + 2)
+    output.seek(0)
+    return output
 
-    st.download_button(
-        label="Download CSV + Excel (ZIP)",
-        data=zip_buffer,
-        file_name=f"woocommerce_export_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.zip",
-        mime="application/zip"
-    )
+# === STREAMLIT APP ===
+st.title("WooCommerce to Zoho Reconciliation")
+
+# Date inputs
+start_date = st.date_input("Start Date", value=datetime.now().date())
+end_date = st.date_input("End Date", value=datetime.now().date())
+
+if st.button("Fetch Orders"):
+    with st.spinner("Fetching data from WooCommerce..."):
+        try:
+            orders = fetch_orders(start_date, end_date)
+            st.success(f"Fetched {len(orders)} orders from WooCommerce.")
+
+            # Load item database
+            item_db = load_item_database()
+
+            # Create summary and main df
+            df, summary_df = create_summary_and_csv(orders, item_db)
+
+            st.subheader("Summary Preview")
+            st.dataframe(summary_df.head())
+
+            # Generate Excel
+            excel_data = create_excel(summary_df)
+
+            # CSV Download
+            csv_data = df.to_csv(index=False).encode('utf-8')
+
+            # === DOWNLOAD BUTTONS ===
+            st.download_button(
+                label="Download Orders CSV",
+                data=csv_data,
+                file_name=f"orders_{start_date}_to_{end_date}.csv",
+                mime="text/csv"
+            )
+
+            st.download_button(
+                label="Download Summary Excel",
+                data=excel_data,
+                file_name=f"summary_{start_date}_to_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        except Exception as e:
+            st.error(f"Error fetching data: {e}")
